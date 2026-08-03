@@ -1,0 +1,2333 @@
+/* ==========================================================================
+   Trizen Commission Portal — design system
+   ========================================================================== */
+
+/* ==========================================================================
+   Brand
+   Navy #0D1B3D · Green #059669 · Grey #A6A8AB · Montserrat
+   ========================================================================== */
+
+:root {
+  --brand-navy: #0d1b3d;
+  --brand-green: #059669;
+  --brand-grey: #a6a8ab;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  --font: 'Montserrat', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+}
+
+/* --- Light (default) ------------------------------------------------------ */
+
+/* `.login-screen` is listed here on purpose: the login card is a white branded
+   splash, so it stays on the light palette even when the app is in dark mode.
+   Without this the card is white but its buttons keep dark-theme colours, and
+   "Create account" renders as a navy block with navy text. */
+:root,
+:root[data-theme='light'],
+.login-screen {
+  --sidebar: linear-gradient(180deg, #244267 0%, #223a5e 50%, #1f385a 100%);
+  --sidebar-hover: rgba(255, 255, 255, 0.10);
+  --sidebar-active: #059669;
+  --sidebar-text: #d0daea;
+  --sidebar-text-strong: #ffffff;
+
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-alt: #f8fafc;
+  --border: #e2e6ed;
+  --border-strong: #c8cfda;
+
+  --text: #0d1b3d;
+  --text-muted: #5d6b85;
+  --text-faint: #a6a8ab;
+
+  --primary: #059669;
+  --primary-hover: #047857;
+  --primary-soft: #ecfdf5;
+
+  --accent: #0d1b3d;
+  --accent-soft: #eef1f7;
+
+  --positive: #059669;
+  --positive-soft: #ecfdf5;
+  --negative: #be123c;
+  --negative-soft: #fff1f2;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+
+  --shadow-sm: 0 1px 2px rgba(13, 27, 61, 0.06);
+  --shadow: 0 4px 16px rgba(13, 27, 61, 0.08);
+  --shadow-lg: 0 18px 48px rgba(13, 27, 61, 0.18);
+
+  --shell-border: rgba(255, 255, 255, 0.08);
+}
+
+/* --- Dark ----------------------------------------------------------------- */
+
+:root[data-theme='dark'] {
+  /* Midnight slate: a calmer, more executive dark theme than saturated navy. */
+  --sidebar: linear-gradient(180deg, #2a3c50 0%, #223346 52%, #1a2a39 100%);
+  --sidebar-hover: rgba(255, 255, 255, 0.09);
+  --sidebar-active: #059669;
+  --sidebar-text: #c9d5e1;
+  --sidebar-text-strong: #ffffff;
+
+  --bg: #121b25;
+  --surface: #1a2734;
+  --surface-alt: #223241;
+  --border: #33485a;
+  --border-strong: #465f74;
+
+  --text: #edf3f8;
+  --text-muted: #b7c4d0;
+  --text-faint: #8295a6;
+
+  --primary: #10b981;
+  --primary-hover: #34d399;
+  --primary-soft: rgba(16, 185, 129, 0.14);
+
+  --accent: #38bdf8;
+  --accent-soft: rgba(56, 189, 248, 0.14);
+
+  --positive: #34d399;
+  --positive-soft: rgba(52, 211, 153, 0.14);
+  --negative: #fb7185;
+  --negative-soft: rgba(251, 113, 133, 0.14);
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.14);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.55);
+
+  --shell-border: rgba(255, 255, 255, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Electron: the whole app is a document, never a scrolling web page. */
+#root {
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* ==========================================================================
+   Layout
+   ========================================================================== */
+
+/* The sidebar runs the full height of the window. The workspace beside it is an
+   inset panel with rounded corners, so the dark shell shows through around it. */
+.app-shell {
+  --sidebar-width: 236px;
+  --topbar-height: 58px;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  height: 100%;
+  background: var(--sidebar);
+  /* No transition here: animating a grid track whose value comes from a custom
+     property leaves the computed width stuck at its old value in Chromium, so
+     the sidebar never actually narrows. The collapse is instant instead. */
+}
+
+.app-shell.collapsed {
+  --sidebar-width: 66px;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    --sidebar-width: 66px;
+  }
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 10px 10px 10px 0;
+  background: var(--bg);
+  border: 1px solid var(--shell-border);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   Top bar
+   ========================================================================== */
+
+/* Sits on the page background rather than in a white band, so the workspace
+   reads as one surface. */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: var(--topbar-height);
+  flex-shrink: 0;
+  padding: 0 18px;
+  background: transparent;
+  z-index: 20;
+}
+
+.icon-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 120ms, color 120ms;
+}
+
+.icon-btn:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.breadcrumbs span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.breadcrumbs a {
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.breadcrumbs a:hover {
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.breadcrumbs [aria-current='page'] {
+  color: var(--text);
+  font-weight: 600;
+  padding: 2px 4px;
+}
+
+.crumb-sep {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.topbar-search {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 190px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  color: var(--text-faint);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms;
+}
+
+.topbar-search:hover {
+  border-color: var(--primary);
+  background: var(--surface);
+}
+
+.topbar-search span {
+  flex: 1;
+  text-align: left;
+}
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 5px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-faint);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-identity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 8px 4px 4px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.topbar-identity:hover {
+  background: var(--surface-alt);
+  border-color: var(--border);
+}
+
+.topbar-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+
+.topbar-user .who {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.topbar-user .role {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+@media (max-width: 780px) {
+  .breadcrumbs,
+  .topbar-user {
+    display: none;
+  }
+  .topbar-search {
+    min-width: 0;
+  }
+  .topbar-search span,
+  .topbar-search kbd {
+    display: none;
+  }
+}
+
+/* ==========================================================================
+   Dropdowns
+   ========================================================================== */
+
+.menu-anchor {
+  position: relative;
+}
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 208px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 5px;
+  z-index: 60;
+}
+
+.dropdown.wide {
+  min-width: 348px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.dropdown > button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dropdown > button:hover {
+  background: var(--surface-alt);
+}
+
+.dropdown-title {
+  padding: 8px 10px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.dropdown-empty {
+  padding: 10px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.notification {
+  align-items: flex-start !important;
+}
+
+.notification > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notification strong {
+  font-size: 13px;
+}
+
+.notification .muted {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.notification .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+
+.dot.critical {
+  background: var(--negative);
+}
+.dot.warning {
+  background: var(--warning);
+}
+.dot.info {
+  background: var(--primary);
+}
+
+.bell-dot {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.bell-dot.critical {
+  background: var(--negative);
+}
+
+/* ==========================================================================
+   Global search palette
+   ========================================================================== */
+
+.search-palette {
+  width: 100%;
+  max-width: 600px;
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.search-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+}
+
+.search-input input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.search-results {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.search-empty {
+  padding: 22px 14px;
+  margin: 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.search-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.search-hit.active {
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+
+.search-hit > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.search-hit strong {
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.search-hit .muted {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar {
+  background: var(--sidebar);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+}
+
+/* Collapsed rail: labels vanish, icons centre, tooltips carry the meaning. */
+.app-shell.collapsed .nav-text,
+.app-shell.collapsed .sidebar-nav .nav-group svg:last-child {
+  display: none;
+}
+
+.app-shell.collapsed .sidebar-nav a,
+.app-shell.collapsed .sidebar-nav .nav-group {
+  justify-content: center;
+  padding: 11px 0;
+}
+
+.app-shell.collapsed .sidebar-brand {
+  justify-content: center;
+  padding: 0 8px;
+}
+
+@media (max-width: 900px) {
+  .nav-text,
+  .sidebar-brand-text,
+  .sidebar-nav .nav-group svg:last-child {
+    display: none;
+  }
+  .sidebar-nav a,
+  .sidebar-nav .nav-group {
+    justify-content: center;
+    padding: 11px 0;
+  }
+  .sidebar-brand {
+    justify-content: center;
+    padding: 0 8px;
+  }
+}
+
+/* The logo doubles as the sidebar toggle — there is no burger icon. */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 72px;
+  padding: 14px 14px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  transition: background 130ms;
+}
+
+.sidebar-brand:hover {
+  background: var(--sidebar-hover);
+}
+
+.sidebar-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.sidebar-brand-text strong {
+  color: var(--sidebar-text-strong);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.sidebar-brand-text span {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--brand-green);
+}
+
+/* --- Sidebar logo ---------------------------------------------------------
+   The icon sits directly on the lighter enterprise-navy sidebar. Padding keeps
+   its established footprint and alignment without introducing a card behind it. */
+.sidebar-logo {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.18));
+}
+
+.app-shell.collapsed .sidebar-logo {
+  width: 46px;
+  height: 46px;
+}
+
+.logo-plaque.large {
+  padding: 18px 22px;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+/* --- Theme switch --------------------------------------------------------- */
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.theme-switch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--sidebar-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 130ms, color 130ms;
+}
+
+.theme-switch:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.theme-switch .switch-label {
+  flex: 1;
+  text-align: left;
+}
+
+/* The little track that slides between sun and moon. */
+.switch-track {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  flex-shrink: 0;
+  transition: background 130ms;
+}
+
+.theme-switch[data-theme='dark'] .switch-track {
+  background: var(--brand-green);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 150ms ease;
+}
+
+.theme-switch[data-theme='dark'] .switch-knob {
+  transform: translateX(14px);
+}
+
+.app-shell.collapsed .theme-switch {
+  justify-content: center;
+  padding: 9px 0;
+}
+
+.app-shell.collapsed .theme-switch .switch-label,
+.app-shell.collapsed .theme-switch .switch-track {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .theme-switch {
+    justify-content: center;
+    padding: 9px 0;
+  }
+  .theme-switch .switch-label,
+  .theme-switch .switch-track {
+    display: none;
+  }
+}
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-text);
+  text-decoration: none;
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: background 120ms, color 120ms;
+}
+
+.sidebar-nav a:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-strong);
+}
+
+/* Selected item: filled, with an accent bar on the left edge so it's obvious
+   at a glance which screen you're on — including in the collapsed rail. */
+.sidebar-nav a.active {
+  background: var(--sidebar-active);
+  color: #fff;
+  font-weight: 650;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35);
+}
+
+.sidebar-nav a.active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: #fff;
+}
+
+.sidebar-nav a {
+  position: relative;
+}
+
+.sidebar-nav a.active svg {
+  color: #fff;
+}
+
+/* Collapsible group header (CRM). Styled to sit flush with the links. */
+.sidebar-nav .nav-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-text);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms, color 120ms;
+}
+
+.sidebar-nav .nav-group:hover,
+.sidebar-nav .nav-group.active {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.sidebar-nav .nav-group-label {
+  flex: 1;
+}
+
+.sidebar-nav .nav-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 3px;
+  padding-left: 12px;
+  /* Guide rail so nested items read as belonging to the group. */
+  border-left: 1px solid rgba(255, 255, 255, 0.09);
+  margin-left: 20px;
+}
+
+.sidebar-nav .nav-children a {
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 450;
+  justify-content: space-between;
+}
+
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.nav-badge.danger {
+  background: var(--negative);
+}
+
+.sidebar-footer {
+  padding: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12.5px;
+}
+
+.sidebar-footer .who {
+  color: var(--sidebar-text-strong);
+  font-weight: 600;
+}
+
+.sidebar-footer .role {
+  color: var(--sidebar-text);
+  text-transform: uppercase;
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+}
+
+.main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.page {
+  padding: 0 28px 48px;
+  max-width: 1500px;
+  width: 100%;
+}
+
+/* Sticky so the page title and its actions stay reachable down a long table. */
+.page-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 -28px 20px;
+  padding: 20px 28px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.page-header h1 {
+  font-size: 22px;
+}
+
+.page-header p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.page-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   Cards, tiles, sections
+   ========================================================================== */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.card-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-header h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.card-body {
+  padding: 18px;
+}
+
+.card-body.flush {
+  padding: 0;
+}
+
+.grid {
+  display: grid;
+  gap: 14px;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 15px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.tile .label {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.tile .value {
+  margin-top: 7px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile .hint {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.tile.accent {
+  background: linear-gradient(180deg, var(--primary-soft), var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+.value.positive {
+  color: var(--positive);
+}
+.value.negative {
+  color: var(--negative);
+}
+
+/* Partner cards */
+.partner-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.partner-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.partner-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.partner-card header strong {
+  font-size: 15px;
+}
+
+.partner-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.partner-rows div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.partner-rows span:first-child {
+  color: var(--text-muted);
+}
+
+.partner-rows span:last-child {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.partner-rows .total {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 3px;
+  font-weight: 650;
+}
+
+.partner-rows .total span:first-child {
+  color: var(--text);
+}
+
+/* ==========================================================================
+   Tables
+   ========================================================================== */
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.data th {
+  text-align: left;
+  padding: 10px 14px;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+table.data td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+table.data tbody tr:hover {
+  background: var(--surface-alt);
+}
+
+table.data tbody tr:last-child td {
+  border-bottom: none;
+}
+
+table.data .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+table.data tfoot td {
+  padding: 11px 14px;
+  background: var(--surface-alt);
+  border-top: 2px solid var(--border-strong);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* --- Customisable table --------------------------------------------------- */
+
+table.data.resizable {
+  table-layout: fixed;
+}
+
+table.data.resizable th,
+table.data.resizable td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+table.data th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+table.data th.sortable:hover {
+  color: var(--text);
+}
+
+.th-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  vertical-align: middle;
+}
+
+.pin-mark {
+  color: var(--primary);
+}
+
+/* Pinned columns stay put while the rest scrolls sideways. */
+table.data th.pinned,
+table.data td.pinned {
+  position: sticky;
+  z-index: 2;
+  background: var(--surface);
+}
+
+table.data th.pinned {
+  z-index: 3;
+  background: var(--surface-alt);
+}
+
+table.data tbody tr:hover td.pinned {
+  background: var(--surface-alt);
+}
+
+/* A shadow marks where the frozen columns end. */
+table.data th.pinned:last-of-type::after,
+table.data td.pinned:last-of-type::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  transform: translateX(100%);
+  background: linear-gradient(to right, rgba(16, 26, 46, 0.07), transparent);
+  pointer-events: none;
+}
+
+.col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  user-select: none;
+}
+
+.col-resizer:hover {
+  background: var(--primary);
+  opacity: 0.35;
+}
+
+table.data th {
+  position: sticky;
+  top: 0;
+}
+
+table.data.resizable th {
+  position: relative;
+}
+
+table.data.resizable th.pinned {
+  position: sticky;
+}
+
+/* --- Column manager ------------------------------------------------------- */
+
+.column-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+}
+
+.column-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: grab;
+}
+
+.column-row.dragging {
+  opacity: 0.45;
+  border-color: var(--primary);
+}
+
+.column-row.is-hidden .column-name {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.column-row .grip {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.column-name {
+  flex: 1;
+  font-size: 13px;
+}
+
+.empty {
+  padding: 44px 20px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 5px;
+  font-size: 15px;
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms, border-color 120ms, opacity 120ms;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-alt);
+  border-color: var(--text-faint);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+.btn.danger {
+  color: var(--negative);
+  border-color: color-mix(in srgb, var(--negative) 30%, transparent);
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: var(--negative-soft);
+}
+
+.btn.small {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: var(--surface-alt);
+  border-color: var(--border);
+}
+
+/* ==========================================================================
+   Forms
+   ========================================================================== */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.field input,
+.field select,
+.field textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  outline: none;
+  transition: border-color 120ms, box-shadow 120ms;
+  width: 100%;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 62px;
+}
+
+.field .help {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.checkbox input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+/* ==========================================================================
+   Modal
+   ========================================================================== */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 26, 46, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 20px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 720px;
+  overflow: hidden;
+}
+
+.modal.narrow {
+  max-width: 460px;
+}
+
+.modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h2 {
+  font-size: 16px;
+}
+
+.modal-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal-footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-alt);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ==========================================================================
+   Badges, banners
+   ========================================================================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.badge.neutral {
+  background: var(--accent-soft);
+  color: var(--text-muted);
+}
+.badge.info {
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+.badge.success {
+  background: var(--positive-soft);
+  color: var(--positive);
+}
+.badge.danger {
+  background: var(--negative-soft);
+  color: var(--negative);
+}
+.badge.warn {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.banner {
+  display: flex;
+  gap: 11px;
+  padding: 12px 15px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  margin-bottom: 16px;
+  border: 1px solid;
+  align-items: flex-start;
+}
+
+.banner.warning {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  color: var(--warning);
+}
+
+.banner.error {
+  background: var(--negative-soft);
+  border-color: color-mix(in srgb, var(--negative) 30%, transparent);
+  color: var(--negative);
+}
+
+.banner.info {
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  color: var(--primary-hover);
+}
+
+/* Clickable alert cards on the dashboard's "needs attention" strip. */
+.alert-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 13px 15px;
+  border-radius: var(--radius);
+  border: 1px solid;
+  border-left-width: 4px;
+  text-decoration: none;
+  background: var(--surface);
+  transition: transform 120ms, box-shadow 120ms;
+}
+
+.alert-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
+}
+
+.alert-card strong {
+  font-size: 13.5px;
+}
+
+.alert-card span {
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.alert-card.critical {
+  border-color: color-mix(in srgb, var(--negative) 30%, transparent);
+  border-left-color: var(--negative);
+  color: var(--negative);
+}
+
+.alert-card.warning {
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  border-left-color: var(--warning);
+  color: var(--warning);
+}
+
+.alert-card.info {
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  border-left-color: var(--primary);
+  color: var(--primary-hover);
+}
+
+/* ==========================================================================
+   Login
+   ========================================================================== */
+
+.login-screen {
+  /* Authentication has its own fixed visual system, independent of the
+     signed-in application's light/dark preference. */
+  --primary: #059669;
+  --primary-hover: #047857;
+  --text: #102a50;
+  --text-muted: #64748b;
+  --text-faint: #94a3b8;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 26px;
+  color: #102a50;
+  color-scheme: light;
+  background:
+    radial-gradient(circle at 12% 14%, rgba(16, 185, 129, 0.20), transparent 30%),
+    radial-gradient(circle at 88% 84%, rgba(14, 116, 144, 0.30), transparent 34%),
+    linear-gradient(135deg, #0b1f3d 0%, #153b65 52%, #092946 100%);
+  overflow: auto;
+}
+
+.login-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  width: 100%;
+  max-width: 1180px;
+  min-height: 650px;
+  background: #ffffff;
+  border: 1px solid rgba(16, 42, 80, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 30px 80px rgba(16, 42, 80, 0.18);
+  overflow: hidden;
+}
+
+.login-form-side {
+  display: flex;
+  flex-direction: column;
+  padding: 42px 54px 34px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+}
+
+.login-screen .field label {
+  color: #52627b;
+  font-size: 13px;
+}
+
+/* Centres the form vertically without pinning the brand or footnote. */
+.login-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 30px 0;
+}
+
+.login-body h1 {
+  color: #102a50;
+  font-size: 38px;
+  letter-spacing: -0.03em;
+}
+
+.login-sub {
+  margin: 6px 0 24px;
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.login-form input {
+  width: 100%;
+  padding: 14px 15px;
+  color: #102a50;
+  background: #ffffff;
+  border: 1px solid #b9c7d8;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.login-form input:focus {
+  border-color: #059669;
+  box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.12);
+}
+
+.login-password-input {
+  position: relative;
+}
+
+.login-password-input input {
+  padding-right: 48px;
+}
+
+.password-visibility {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.password-visibility:hover,
+.password-visibility:focus-visible {
+  background: #eef6f4;
+  color: #047857;
+}
+
+.login-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* The shared .checkbox is top-aligned for multi-line settings copy. Here the
+   label is one short line, so centre it and stop it wrapping to "Remember / me". */
+.login-row .checkbox {
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.login-row .checkbox input {
+  margin-top: 0;
+  width: 17px;
+  height: 17px;
+}
+
+.link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.login-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 11px;
+  margin-top: 6px;
+}
+
+.login-submit,
+.login-secondary {
+  justify-content: center;
+  padding: 11px 16px;
+}
+
+.login-footnote {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+/* --- Decorative panel ----------------------------------------------------- */
+
+.login-art {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(circle at 58% 38%, #126786 0%, transparent 34%),
+    linear-gradient(155deg, #0b2449 0%, #08234a 52%, #061a36 100%);
+  display: flex;
+  flex-direction: column;
+  /* Copy sits at the bottom; the artwork fills everything above it. */
+  justify-content: flex-end;
+}
+
+/* Full-bleed artwork. `cover` so it fills the panel at any card size without
+   distorting — the composition is centred, so cropping stays sensible. */
+.login-art-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
+/* Darkens only the lower third, so the headline holds up over whatever the
+   artwork happens to put there. */
+.login-art-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 45%,
+    rgba(6, 20, 42, 0.55) 74%,
+    rgba(6, 20, 42, 0.88) 100%
+  );
+}
+
+.login-art-emblem {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 40px;
+}
+
+.login-art-glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  opacity: 0.55;
+}
+
+.login-art-glow.one {
+  width: 320px;
+  height: 320px;
+  top: -90px;
+  right: -70px;
+  background: var(--brand-green);
+  opacity: 0.45;
+}
+
+.login-art-glow.two {
+  width: 280px;
+  height: 280px;
+  bottom: 20px;
+  left: -90px;
+  background: #1d4ed8;
+  opacity: 0.32;
+}
+
+.login-art-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-size: 44px 44px;
+  /* Fades the grid out towards the bottom so the text stays legible. */
+  mask-image: linear-gradient(to bottom, #000 0%, transparent 78%);
+}
+
+.login-art-copy {
+  position: relative;
+  padding: 0 48px 46px;
+  color: #fff;
+}
+
+.login-art-copy h2 {
+  margin: 0 0 12px;
+  font-size: 27px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+.login-art-copy p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+}
+
+@media (max-width: 880px) {
+  .login-card {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    max-width: 460px;
+  }
+  .login-art {
+    display: none;
+  }
+}
+
+/* ==========================================================================
+   Auth / setup screens
+   ========================================================================== */
+
+.auth-screen {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(150deg, #101a2e 0%, #1c2c4c 55%, #223963 100%);
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  padding: 30px;
+}
+
+.auth-card.wide {
+  max-width: 660px;
+}
+
+.auth-card h1 {
+  font-size: 20px;
+  margin-bottom: 4px;
+}
+
+.auth-card .sub {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 22px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-card ol {
+  padding-left: 20px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13.5px;
+}
+
+.auth-card code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--accent-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.auth-card pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: #101a2e;
+  color: #d5e2f5;
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 6px 0 0;
+}
+
+/* ==========================================================================
+   Misc
+   ========================================================================== */
+
+.loading-screen {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.spinner {
+  width: 26px;
+  height: 26px;
+  border: 2.5px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  margin: 0 auto 12px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  font-weight: 650;
+  margin: 26px 0 11px;
+}
+
+.section-title:first-child {
+  margin-top: 0;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chart-wrap {
+  height: 260px;
+  width: 100%;
+}
+
+/* ==========================================================================
+   Avatars
+   ========================================================================== */
+
+.avatar-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.avatar-large,
+.avatar-small {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+  font-weight: 700;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.avatar-large {
+  width: 84px;
+  height: 84px;
+  font-size: 26px;
+  border: 2px solid var(--border);
+}
+
+.avatar-small {
+  width: 26px;
+  height: 26px;
+  font-size: 10.5px;
+}
+
+.avatar-large img,
+.avatar-small img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.topbar-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+  font-size: 11.5px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.topbar-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.settings-link {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13.5px;
+  font-weight: 550;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+
+.settings-link:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-link span {
+  flex: 1;
+}
+
+.settings-link svg:last-child {
+  color: var(--text-faint);
+}
+
+/* ==========================================================================
+   Tabs
+   ========================================================================== */
+
+.tabs {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 550;
+  cursor: pointer;
+  /* Sits on the container's border so the active tab joins the panel below. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 120ms, border-color 120ms;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 19px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tab.active .tab-count {
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+}
+
+.tab-count.danger {
+  background: var(--negative-soft);
+  color: var(--negative);
+}
+
+/* ==========================================================================
+   Shipment timeline
+   ========================================================================== */
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.timeline li {
+  display: flex;
+  gap: 13px;
+  padding: 0 0 18px;
+  position: relative;
+  font-size: 13px;
+}
+
+.timeline li:last-child {
+  padding-bottom: 0;
+}
+
+/* The connecting rail, drawn behind each marker except the last. */
+.timeline li:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 22px;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+
+.timeline li.done:not(:last-child)::before {
+  background: var(--positive);
+}
+
+.timeline-marker {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 2px solid var(--border-strong);
+  color: var(--text-faint);
+  z-index: 1;
+}
+
+.timeline li.done .timeline-marker {
+  background: var(--positive);
+  border-color: var(--positive);
+  color: #fff;
+}
+
+.timeline li.current .timeline-marker {
+  box-shadow: 0 0 0 4px var(--positive-soft);
+}
+
+.timeline li.current strong {
+  color: var(--positive);
+}
+
+.timeline li:not(.done) strong {
+  color: var(--text-faint);
+  font-weight: 550;
+}
+
+/* ==========================================================================
+   Drop zone
+   ========================================================================== */
+
+.dropzone {
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+  padding: 30px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms, transform 120ms;
+}
+
+.dropzone:hover:not(.disabled) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+/* Solid border while a file is over the zone, so "let go here" is unmistakable. */
+.dropzone.active {
+  border-style: solid;
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  transform: scale(1.01);
+}
+
+.dropzone.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dropzone .dropzone-icon {
+  color: var(--text-faint);
+  margin-bottom: 10px;
+}
+
+.dropzone.active .dropzone-icon {
+  color: var(--primary);
+}
+
+.dropzone strong {
+  display: block;
+  font-size: 14.5px;
+  margin-bottom: 3px;
+}
+
+.dropzone .dropzone-hint {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+.dropzone .dropzone-formats {
+  margin-top: 12px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* Pointer events off so dragleave doesn't fire as the cursor crosses children. */
+.dropzone.active * {
+  pointer-events: none;
+}

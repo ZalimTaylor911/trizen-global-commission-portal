@@ -1,0 +1,178 @@
+rules_version = '2';
+
+// Trizen Commission Portal — Firestore security rules.
+//
+// The Spark plan has no Cloud Functions, so these rules are the only thing
+// standing between a signed-in user and the company's books.
+//
+// Two roles (SPEC.md §25):
+//
+//   admin  — unrestricted.
+//   user   — the spec's "Normal User". Runs the day-to-day business: creates and
+//            edits customers, shipments and expenses, and can see everything
+//            including every partner's withdrawals. Cannot record withdrawals,
+//            change partner shares or agency splits, manage accounts, or delete
+//            financial records.
+//
+// The role is stored as 'admin' | 'partner' on users/{uid}; 'partner' is the
+// normal user. Deploy with:
+//   firebase deploy --only firestore:rules
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().role == 'admin';
+    }
+
+    /** Signed in and linked to a partner record — i.e. a real member of the team. */
+    function isStaff() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    /** A member may change only the profile fields the app exposes to them. */
+    function isOwnProfileUpdate(userId) {
+      return signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'phone', 'photo'])
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.partnerId == resource.data.partnerId
+        && request.resource.data.email == resource.data.email;
+    }
+
+    /**
+     * Audit records are written as part of the same Firestore batch as a book
+     * change. These checks bind the entry to the signed-in account and server
+     * clock, so a client cannot impersonate another team member or backdate it.
+     */
+    function isValidAuditEntry() {
+      return request.resource.data.keys().hasOnly([
+          'userId', 'userName', 'action', 'entity', 'entityId', 'entityLabel',
+          'timestamp', 'previousValue', 'newValue'
+        ])
+        && request.resource.data.keys().hasAll([
+          'userId', 'userName', 'action', 'entity', 'entityId', 'entityLabel',
+          'timestamp', 'previousValue', 'newValue'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.userName == userDoc().name
+        && request.resource.data.timestamp == request.time
+        && request.resource.data.action in ['created', 'updated', 'deleted', 'status-changed', 'signed-in']
+        && request.resource.data.entity in [
+          'shipment', 'agency', 'partner', 'customer', 'expense',
+          'expense-category', 'withdrawal', 'session'
+        ]
+        && request.resource.data.entityId is string
+        && request.resource.data.entityLabel is string
+        && (request.resource.data.previousValue == null || request.resource.data.previousValue is map)
+        && (request.resource.data.newValue == null || request.resource.data.newValue is map);
+    }
+
+    // --- Users -------------------------------------------------------------
+    // A user may read their own record so the app can resolve their role, and
+    // may edit their own name, phone and avatar.
+    //
+    // The `role` and `partnerId` comparisons are the important part: without
+    // them, anyone could grant themselves admin — or point their login at
+    // another partner's earnings — by editing their own profile. Only an admin
+    // can change either field, and only an admin can create or delete a record.
+    match /users/{userId} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == userId);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || isOwnProfileUpdate(userId);
+    }
+
+    // --- App settings ------------------------------------------------------
+    // Everyone reads them (they shape defaults across the app); admins write.
+    match /settings/{docId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // --- Commission structure ----------------------------------------------
+    // Partner shares and agency splits decide who gets paid what, so they are
+    // admin-only to change. Everyone reads them to make sense of the figures.
+    match /agencies/{docId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /partners/{docId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // --- CRM ---------------------------------------------------------------
+    // Normal users run the customer book, including payment terms. Only an
+    // admin may delete a customer, since that would orphan its shipments.
+    match /customers/{docId} {
+      allow read: if isStaff();
+      allow create, update: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // --- Operations --------------------------------------------------------
+    // Shipments and expenses are day-to-day work: any staff member may add and
+    // edit them. Deleting is destructive to the books, so it stays with admin.
+    match /shipments/{docId} {
+      allow read: if isStaff();
+      // Agency payment is the point at which commission becomes earned. Keep
+      // that financial finalisation with the administrator; users can continue
+      // to create and update operational loads up to that point.
+      allow create: if isAdmin()
+        || (isStaff() && request.resource.data.status != 'Agency Paid');
+      allow update: if isAdmin()
+        || (
+          isStaff()
+          && resource.data.status != 'Agency Paid'
+          && request.resource.data.status != 'Agency Paid'
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /expenses/{docId} {
+      allow read: if isStaff();
+      allow create, update: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    match /expenseCategories/{docId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // --- Withdrawals -------------------------------------------------------
+    // Everyone can see every partner's withdrawals — the team asked for nothing
+    // to be hidden between partners. Only an admin may record or remove one.
+    match /withdrawals/{docId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // --- Audit log ---------------------------------------------------------
+    // Append-only by design. Entries must identify the signed-in user and use
+    // server time; edits and deletions are forbidden, including for admins.
+    match /auditLog/{docId} {
+      allow read: if isAdmin();
+      allow create: if isStaff() && isValidAuditEntry();
+      allow update, delete: if false;
+    }
+
+    // Anything not matched above is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
