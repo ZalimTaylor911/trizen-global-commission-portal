@@ -13,8 +13,8 @@
 import { round2 } from './money';
 import {
   AR_OPEN_STATUSES,
-  AR_SETTLED_STATUSES,
   DEAD_STATUSES,
+  isCustomerPaymentSettled,
   type Customer,
   type Shipment,
 } from './types';
@@ -94,7 +94,7 @@ export function computeReceivable(
   const daysUntilDue = daysBetween(asOf, dueDate);
 
   let state: ReceivableState;
-  if (AR_SETTLED_STATUSES.includes(shipment.status)) {
+  if (isCustomerPaymentSettled(shipment.status)) {
     state = 'settled';
   } else if (DEAD_STATUSES.includes(shipment.status)) {
     state = 'written-off';

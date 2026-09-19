@@ -175,7 +175,7 @@ export default function Partners() {
 
       <Banner tone="info">
         Changing a share affects loads earned from now on. Anything already at{' '}
-        <strong>Agency Paid</strong> keeps the shares it was paid under, so past balances and
+        <strong>agency payment</strong> keeps the shares it was paid under, so past balances and
         withdrawals stay as they were.
       </Banner>
 

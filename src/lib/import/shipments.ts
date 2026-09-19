@@ -78,7 +78,7 @@ const SAMPLE_ROWS = [
     '2300',
     '700',
     'GLT Logistics',
-    'Agency Paid',
+    'Customer Paid',
     '2026-07-16',
     '2',
     '2026-07-15',
@@ -524,14 +524,24 @@ export async function parseShipmentFile(
 
     const statusText = value('Status');
     let status: ShipmentStatus = 'Assigned';
+    let agencyPaid = false;
     if (statusText) {
-      const matched = matchStatus(statusText);
-      if (matched) status = matched;
-      else {
-        errors.push({
-          column: 'Status',
-          message: `"${statusText}" isn't a valid status. See the Reference sheet.`,
-        });
+      // Older exports used Agency Paid as a shipment status. Preserve the
+      // financial history while importing it into the new separate payment
+      // field, with Customer Paid as the GLT operational state.
+      if (statusText.trim().toLowerCase() === 'agency paid') {
+        status = 'Customer Paid';
+        agencyPaid = true;
+        warnings.push({ column: 'Status', message: 'Legacy Agency Paid was imported as Customer Paid with agency payment recorded.' });
+      } else {
+        const matched = matchStatus(statusText);
+        if (matched) status = matched;
+        else {
+          errors.push({
+            column: 'Status',
+            message: `"${statusText}" isn't a valid status. See the Reference sheet.`,
+          });
+        }
       }
     } else {
       warnings.push({ column: 'Status', message: 'Blank — imported as Assigned.' });
@@ -664,6 +674,9 @@ export async function parseShipmentFile(
             status,
             shipmentType,
             agencyId: agency.id,
+            agencyPaid,
+            agencyPaidAt: null,
+            customerPaidAt: null,
             invoicedDate,
             transitDays,
             actualPickupDate,

@@ -4,6 +4,8 @@ import type {
   Agency,
   AuditEntry,
   Customer,
+  Employee,
+  EmployeeSettlementRecord,
   Expense,
   ExpenseCategory,
   Partner,
@@ -14,6 +16,8 @@ import type {
 export const COLLECTIONS = {
   users: 'users',
   partners: 'partners',
+  employees: 'employees',
+  employeeSettlements: 'employeeSettlements',
   agencies: 'agencies',
   customers: 'customers',
   shipments: 'shipments',
@@ -31,11 +35,19 @@ export const SETTINGS_DOC_ID = 'app';
 export interface UserRecord {
   id: string;
   email: string;
-  role: 'admin' | 'partner';
+  role: 'admin' | 'partner' | 'employee';
   /** Links this login to a row in `partners`. */
   partnerId: string;
+  /** Links an employee login to its employee profile. */
+  employeeId?: string | null;
+  /** Google/self-registration stays pending until an admin configures it. */
+  status?: 'pending' | 'approved';
   name: string;
+  firstName?: string;
+  lastName?: string;
+  address?: string;
   phone?: string;
+  emailVerified?: boolean;
   /**
    * Avatar as a data URL, resized to 128px before saving. Held in Firestore
    * rather than Cloud Storage, which needs billing enabled — a 128px JPEG is a
@@ -70,6 +82,8 @@ function typed<T>(name: string) {
 
 export const usersCol = typed<UserRecord>(COLLECTIONS.users);
 export const partnersCol = typed<Partner>(COLLECTIONS.partners);
+export const employeesCol = typed<Employee>(COLLECTIONS.employees);
+export const employeeSettlementsCol = typed<EmployeeSettlementRecord>(COLLECTIONS.employeeSettlements);
 export const agenciesCol = typed<Agency>(COLLECTIONS.agencies);
 export const customersCol = typed<Customer>(COLLECTIONS.customers);
 export const shipmentsCol = typed<Shipment>(COLLECTIONS.shipments);

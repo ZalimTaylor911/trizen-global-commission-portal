@@ -1,8 +1,10 @@
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { DataProvider } from './context/DataContext';
 import { isFirebaseConfigured } from './firebase/config';
-import Layout from './components/Layout';
+import Layout from './components/sidebar_menu';
+import SplashScreen from './components/SplashScreen';
 import { Spinner } from './components/ui';
 import Setup from './pages/Setup';
 import Login from './pages/Login';
@@ -11,6 +13,8 @@ import Shipments from './pages/Shipments';
 import ShipmentDetail from './pages/ShipmentDetail';
 import Agencies from './pages/Agencies';
 import Partners from './pages/Partners';
+import Employees from './pages/Employees';
+import EmployeeSettlements from './pages/EmployeeSettlements';
 import Expenses from './pages/Expenses';
 import Withdrawals from './pages/Withdrawals';
 import Reports from './pages/Reports';
@@ -28,10 +32,44 @@ function AdminOnly({ children }: { children: React.ReactNode }) {
   return isAdmin ? <>{children}</> : <Navigate to="/" replace />;
 }
 
+function AdminOrEmployee({ children }: { children: React.ReactNode }) {
+  const { isAdmin, isEmployee } = useAuth();
+  return isAdmin || isEmployee ? <>{children}</> : <Navigate to="/" replace />;
+}
+
 function Shell() {
   const { user, loading, profileMissing } = useAuth();
+  const [splashVisible, setSplashVisible] = useState(true);
+  const splashTimer = useRef<number | null>(null);
+  const splashCycle = useRef(0);
+  const splashStarted = useRef(false);
 
-  if (loading) return <Spinner label="Connecting to Firebase…" />;
+  useEffect(() => {
+    if (!loading) {
+      splashStarted.current = false;
+      return;
+    }
+
+    // Firebase can move through several loading states. Start one timer for
+    // the whole connection cycle instead of restarting it for each state.
+    if (splashStarted.current) return;
+
+    splashStarted.current = true;
+    setSplashVisible(true);
+    const cycle = splashCycle.current + 1;
+    splashCycle.current = cycle;
+    if (splashTimer.current !== null) window.clearTimeout(splashTimer.current);
+    splashTimer.current = window.setTimeout(() => {
+      if (splashCycle.current === cycle) setSplashVisible(false);
+    }, 15000);
+  }, [loading]);
+
+  useEffect(() => () => {
+    if (splashTimer.current !== null) window.clearTimeout(splashTimer.current);
+  }, []);
+
+  if (splashVisible) return <SplashScreen label="Loading..." />;
+  if (loading) return <Spinner label="Loading..." />;
   if (!user) return <Login />;
   // Signed in, but no `users/{uid}` record links them to a partner yet.
   if (profileMissing) return <NoProfile />;
@@ -52,7 +90,7 @@ function Shell() {
             {/* `new` must precede `:customerId` or it would be read as an id. */}
             <Route path="customers/new" element={<CustomerList openCreate />} />
             <Route path="customers" element={<CustomerList />} />
-            <Route path="customers/:customerId" element={<CustomerProfile />} />
+            <Route path="customers/:customerId" element={<AdminOnly><CustomerProfile /></AdminOnly>} />
             <Route path="invoices" element={<Invoices />} />
 
             {/* Old bookmarks and links from before the CRM was consolidated. */}
@@ -71,9 +109,9 @@ function Shell() {
               </AdminOnly>
             }
           />
-          <Route path="expenses" element={<Expenses />} />
-          <Route path="withdrawals" element={<Withdrawals />} />
-          <Route path="reports" element={<Reports />} />
+          <Route path="expenses" element={<AdminOnly><Expenses /></AdminOnly>} />
+          <Route path="withdrawals" element={<AdminOnly><Withdrawals /></AdminOnly>} />
+          <Route path="reports" element={<AdminOnly><Reports /></AdminOnly>} />
           <Route
             path="agencies"
             element={
@@ -90,6 +128,16 @@ function Shell() {
               </AdminOnly>
             }
           />
+          <Route
+            path="employees"
+            element={
+              <AdminOnly>
+                <Employees />
+              </AdminOnly>
+            }
+          />
+          <Route path="employees/settlements" element={<AdminOrEmployee><EmployeeSettlements /></AdminOrEmployee>} />
+          <Route path="employees/slips" element={<AdminOrEmployee><Reports initialKind="employee-payslip" employeeOnly /></AdminOrEmployee>} />
           <Route
             path="audit"
             element={

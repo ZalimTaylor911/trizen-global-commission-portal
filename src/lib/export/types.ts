@@ -24,4 +24,26 @@ export interface ReportDocument {
   /** Key figures printed above the tables. */
   summary?: { label: string; value: string }[];
   sheets: ReportSheet[];
+  /** Dedicated printable employee slips; one PDF page is created per entry. */
+  payslips?: PaySlip[];
+}
+
+export interface PaySlip {
+  employeeName: string;
+  employeeEmail?: string;
+  employeePhone?: string;
+  employeeAddress?: string;
+  employeeNotes?: string;
+  agencyName?: string;
+  agencyBasisPercent?: number | null;
+  month: string;
+  compensationLabel: string;
+  status: 'unpaid' | 'paid';
+  internalGenerated: number;
+  commissionBasis: number;
+  commissionPercent: number;
+  salary: number;
+  commission: number;
+  totalDue: number;
+  loadCount: number;
 }

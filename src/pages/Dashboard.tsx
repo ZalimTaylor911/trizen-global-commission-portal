@@ -22,9 +22,11 @@ import {
   computeLedgers,
   computeMonthlySummaries,
   computeOperationsSummary,
+  isAgencyPaid,
   validatePartnerShares,
   type DataSet,
 } from '@/domain/engine';
+import { isCustomerPaymentSettled } from '@/domain/types';
 import { computeArSummary, computeReceivables, openReceivables } from '@/domain/receivables';
 import { rankCustomers } from '@/domain/customers';
 import { computeNotifications } from '@/domain/notifications';
@@ -44,7 +46,7 @@ function shortMoney(value: number): string {
 }
 
 export default function Dashboard() {
-  const { isAdmin, profile } = useAuth();
+  const { isAdmin, isEmployee, employeeId, profile } = useAuth();
   const data = useData();
   const palette = useChartPalette();
 
@@ -103,6 +105,8 @@ export default function Dashboard() {
   }, [data.expenses, data.expenseCategories]);
 
   if (data.loading) return <Spinner label="Loading your books…" />;
+
+  if (isEmployee) return <EmployeeDashboard data={data} employeeId={employeeId} />;
 
   if (!isAdmin) {
     return <PartnerDashboard ledgers={ledgers} partnerId={profile?.partnerId} />;
@@ -210,7 +214,7 @@ export default function Dashboard() {
           value={formatCurrency(
             round2(
               data.shipments
-                .filter((s) => s.status === 'Customer Paid' || s.status === 'Agency Paid')
+                .filter((s) => isCustomerPaymentSettled(s.status))
                 .reduce((total, s) => total + s.ar, 0),
             ),
           )}
@@ -543,6 +547,64 @@ export default function Dashboard() {
   );
 }
 
+function EmployeeDashboard({ data, employeeId }: { data: ReturnType<typeof useData>; employeeId: string | null }) {
+  const mine = data.shipments.filter((shipment) => shipment.employeeId === employeeId);
+  const employee = data.employees.find((row) => row.id === employeeId);
+  const counts = ['Assigned', 'In Transit', 'Delivered'].map((status) => ({ status, count: mine.filter((shipment) => shipment.status === status).length }));
+  const settlements = data.employeeSettlements.filter((settlement) => settlement.employeeId === employeeId);
+  const customers = new Set(data.customers.map((customer) => customer.id));
+  // Employee-facing business is calculated using the disclosed basis assigned
+  // to this employee. The internal shipment netMargin (which uses the real
+  // agency split) is deliberately never shown in this view.
+  const employeeBasis = employee?.agencyBasisPercent ?? null;
+  const netBusiness = mine.reduce((sum, shipment) => {
+    const basis = employeeBasis ?? shipment.employeeCommissionBasisPercent ?? 0;
+    return sum + round2(shipment.grossMargin * (basis / 100));
+  }, 0);
+  const paidNetBusiness = mine
+    .filter(isAgencyPaid)
+    .reduce((sum, shipment) => {
+      const basis = employeeBasis ?? shipment.employeeCommissionBasisPercent ?? 0;
+      return sum + round2(shipment.grossMargin * (basis / 100));
+    }, 0);
+  const arTotal = mine.reduce((sum, shipment) => sum + shipment.ar, 0);
+  const apTotal = mine.reduce((sum, shipment) => sum + shipment.ap, 0);
+  const grossTotal = mine.reduce((sum, shipment) => sum + shipment.grossMargin, 0);
+  const chartData = counts.map((item) => ({ name: item.status, shipments: item.count }));
+  return <div className="page">
+    <div className="page-header"><div><h1>My Dashboard</h1><p>{mine.length} assigned shipment{mine.length === 1 ? '' : 's'} · {customers.size} assigned customer{customers.size === 1 ? '' : 's'}</p><p className="help">Working agency: {employee?.agencyName ?? 'Not assigned'}</p></div></div>
+    <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+      {counts.map((item) => <Tile key={item.status} label={item.status} value={String(item.count)} />)}
+      <Tile label="Settlements" value={String(settlements.length)} />
+      <Tile label="Net business" value={formatCurrency(round2(netBusiness))} />
+      <Tile label="Paid net business" value={formatCurrency(round2(paidNetBusiness))} />
+      <Tile label="AR" value={formatCurrency(round2(arTotal))} />
+      <Tile label="AP" value={formatCurrency(round2(apTotal))} />
+      <Tile label="Gross business" value={formatCurrency(round2(grossTotal))} />
+    </div>
+    <div style={{ marginTop: 20 }}><Card>
+      <div className="section-title">Shipment performance</div>
+      <ChartFrame height={230}>
+        {({ width, height }) => (
+          <BarChart width={width} height={height} data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="name" />
+            <YAxis allowDecimals={false} />
+            <Tooltip />
+            <Bar dataKey="shipments" fill="#0ea574" radius={[5, 5, 0, 0]} />
+          </BarChart>
+        )}
+      </ChartFrame>
+    </Card></div>
+    <div className="section-title">Quick access</div>
+    <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+      <Link className="settings-link" to="/shipments">My shipments</Link>
+      <Link className="settings-link" to="/crm/customers">My customers</Link>
+      <Link className="settings-link" to="/employees/settlements">My settlements</Link>
+    </div>
+  </div>;
+}
+
 function PartnerDashboard({
   ledgers,
   partnerId,
@@ -575,7 +637,7 @@ function PartnerDashboard({
           <h1>My earnings</h1>
           <p>
             Your share is {formatPercent(mine.sharePercent)} of the team's net margin. Figures update
-            live as shipments are marked Agency Paid.
+            live as agency payments are recorded.
           </p>
         </div>
       </div>

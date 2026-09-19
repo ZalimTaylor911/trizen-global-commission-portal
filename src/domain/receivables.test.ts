@@ -138,7 +138,7 @@ describe('computeReceivable — SPEC.md §14', () => {
   });
 
   it('closes the receivable once the customer pays', () => {
-    for (const status of ['Customer Paid', 'Agency Paid'] as ShipmentStatus[]) {
+    for (const status of ['Customer Paid', 'Agency Paid'] as unknown as ShipmentStatus[]) {
       const receivable = computeReceivable(shipment({ status }), customer(), TODAY);
       expect(receivable.state).toBe('settled');
       expect(receivable.daysPastDue).toBe(0);

@@ -10,6 +10,7 @@
 import {
   computeAgencySummaries,
   computeFinancialSummary,
+  computeEmployeeSettlements,
   computeLedgers,
   computeMonthlySummaries,
   splitExpense,
@@ -18,7 +19,7 @@ import {
 } from '@/domain/engine';
 import { formatCurrency, formatPercent, round2 } from '@/domain/money';
 import { formatDate, monthLabel } from './dates';
-import type { ReportDocument } from './export/types';
+import type { PaySlip, ReportDocument } from './export/types';
 import type { Expense, ExpenseCategory, ShipmentStatus, ShipmentType } from '@/domain/types';
 
 export type ReportKind =
@@ -27,7 +28,9 @@ export type ReportKind =
   | 'monthly'
   | 'agency'
   | 'expenses'
-  | 'withdrawals';
+  | 'withdrawals'
+  | 'employee-settlement'
+  | 'employee-payslip';
 
 export const REPORT_KINDS: { value: ReportKind; label: string; description: string }[] = [
   { value: 'shipments', label: 'Shipment detail', description: 'Every load with its margins and commission.' },
@@ -36,6 +39,8 @@ export const REPORT_KINDS: { value: ReportKind; label: string; description: stri
   { value: 'agency', label: 'Agency summary', description: 'Volume and earnings split by brokerage.' },
   { value: 'expenses', label: 'Expenses', description: 'Operational costs and agency deductions.' },
   { value: 'withdrawals', label: 'Withdrawals', description: 'Payouts recorded against each partner.' },
+  { value: 'employee-settlement', label: 'Employee monthly settlement', description: 'Employee commission, caps, and the amount released to partners.' },
+  { value: 'employee-payslip', label: 'Employee pay / commission slips', description: 'Branded individual or combined employee salary and commission slips.' },
 ];
 
 export interface ReportFilters {
@@ -44,6 +49,7 @@ export interface ReportFilters {
   agencyId: string;
   customer: string;
   partnerId: string;
+  employeeId: string;
   status: '' | ShipmentStatus;
   shipmentType: '' | ShipmentType;
   carrier: string;
@@ -56,6 +62,7 @@ export const EMPTY_FILTERS: ReportFilters = {
   agencyId: '',
   customer: '',
   partnerId: '',
+  employeeId: '',
   status: '',
   shipmentType: '',
   carrier: '',
@@ -83,6 +90,7 @@ export function applyFilters(data: DataSet, filters: ReportFilters): DataSet {
     if (customer && !shipment.companyName.toLowerCase().includes(customer)) return false;
     if (carrier && !shipment.carrierName.toLowerCase().includes(carrier)) return false;
     if (lane && !shipment.lane.toLowerCase().includes(lane)) return false;
+    if (filters.employeeId && shipment.employeeId !== filters.employeeId) return false;
     return true;
   });
 
@@ -100,13 +108,14 @@ export function applyFilters(data: DataSet, filters: ReportFilters): DataSet {
 
 export function describeFilters(
   filters: ReportFilters,
-  lookups: { agencyName: (id: string) => string; partnerName: (id: string) => string },
+  lookups: { agencyName: (id: string) => string; partnerName: (id: string) => string; employeeName: (id: string) => string },
 ): string {
   const parts: string[] = [];
   if (filters.month) parts.push(monthLabel(filters.month));
   else if (filters.year) parts.push(filters.year);
   if (filters.agencyId) parts.push(lookups.agencyName(filters.agencyId));
   if (filters.partnerId) parts.push(lookups.partnerName(filters.partnerId));
+  if (filters.employeeId) parts.push(lookups.employeeName(filters.employeeId));
   if (filters.status) parts.push(`status: ${filters.status}`);
   if (filters.shipmentType) parts.push(filters.shipmentType);
   if (filters.customer) parts.push(`customer: ${filters.customer}`);
@@ -123,11 +132,13 @@ export function buildReport(
 ): ReportDocument {
   const agencyById = new Map(data.agencies.map((agency) => [agency.id, agency]));
   const partnerById = new Map(data.partners.map((partner) => [partner.id, partner]));
+  const employeeById = new Map((data.employees ?? []).map((employee) => [employee.id, employee]));
   const categoryById = new Map(categories.map((category) => [category.id, category]));
 
   const subtitle = describeFilters(filters, {
     agencyName: (id) => agencyById.get(id)?.name ?? 'Unknown agency',
     partnerName: (id) => partnerById.get(id)?.name ?? 'Unknown partner',
+    employeeName: (id) => employeeById.get(id)?.name ?? 'Unknown employee',
   });
 
   const summary = computeFinancialSummary(data);
@@ -368,7 +379,11 @@ export function buildReport(
         const base = [
           formatDate(expense.date),
           categoryById.get(expense.categoryId)?.name ?? 'Uncategorised',
-          expense.type === 'operational' ? 'Operational' : 'Agency deduction',
+          expense.type === 'operational'
+            ? 'Operational'
+            : expense.type === 'employee-compensation'
+              ? 'Employee settlement'
+              : 'Agency deduction',
           round2(expense.amount),
         ];
         if (filters.partnerId) base.push(round2(perPartnerShare(expense)));
@@ -415,6 +430,89 @@ export function buildReport(
             totals: [`${data.withdrawals.length} withdrawals`, null, total, null],
           },
         ],
+      };
+    }
+
+    case 'employee-settlement': {
+      const settlements = computeEmployeeSettlements(data);
+      const employeeRows = settlements.map((settlement) => [
+        monthLabel(settlement.month),
+        settlement.employeeName,
+        settlement.shipments.length,
+        round2(settlement.commissionBasisGenerated),
+        settlement.applicableTier
+          ? `${formatCurrency(settlement.applicableTier.minBusiness)} – ${settlement.applicableTier.maxBusiness == null ? 'No maximum' : formatCurrency(settlement.applicableTier.maxBusiness)}`
+          : 'No matching tier',
+        formatPercent(settlement.commissionPercent),
+        round2(settlement.commissionCalculated),
+        settlement.baseSalary > 0 ? round2(settlement.baseSalary) : null,
+        round2(settlement.finalPayout),
+      ]);
+      const shipmentRows = settlements.flatMap((settlement) => settlement.shipments.map((shipment) => [
+        monthLabel(settlement.month), settlement.employeeName, shipment.loadNumber,
+        shipment.companyName, formatDate(shipment.date), round2(shipment.grossMargin * ((shipment.employeeCommissionBasisPercent ?? 0) / 100)),
+        round2(settlement.payoutByShipmentId[shipment.id] ?? 0),
+      ]));
+      const totalPayout = round2(settlements.reduce((sum, row) => sum + row.finalPayout, 0));
+      return {
+        title: 'Employee Monthly Settlement', subtitle,
+        summary: [
+          { label: 'Employee shipments', value: String(shipmentRows.length) },
+          { label: 'Employee payout', value: formatCurrency(totalPayout) },
+        ],
+        sheets: [
+          { name: 'Employee Settlement', columns: [
+            { header: 'Month' }, { header: 'Employee' }, { header: 'Shipments', numeric: true },
+            { header: 'Total Net Business', numeric: true, currency: true }, { header: 'Applicable tier' }, { header: 'Commission %' },
+            { header: 'Commission calculated', numeric: true, currency: true }, { header: 'Salary', numeric: true, currency: true }, { header: 'Final employee payout', numeric: true, currency: true },
+          ], rows: employeeRows },
+          { name: 'Employee Shipments', columns: [
+            { header: 'Month' }, { header: 'Employee' }, { header: 'Load #' }, { header: 'Company' }, { header: 'Date' },
+            { header: 'Total Net Business', numeric: true, currency: true }, { header: 'Employee payout', numeric: true, currency: true },
+          ], rows: shipmentRows },
+        ],
+      };
+    }
+
+    case 'employee-payslip': {
+      const payslips: PaySlip[] = computeEmployeeSettlements(data).map((settlement) => {
+        const employee = employeeById.get(settlement.employeeId);
+        const recorded = data.employeeSettlements?.find((row) => row.employeeId === settlement.employeeId && row.month === settlement.month);
+        const compensationType = employee?.compensationType ?? 'commission';
+        return {
+          employeeName: settlement.employeeName,
+          employeeEmail: employee?.email,
+          employeePhone: employee?.contactPhone,
+          employeeAddress: employee?.address,
+          employeeNotes: employee?.notes,
+          agencyName: employee?.agencyName ?? undefined,
+          agencyBasisPercent: employee?.agencyBasisPercent ?? null,
+          month: settlement.month,
+          compensationLabel: compensationType === 'salary'
+            ? 'Salary'
+            : compensationType === 'salary-plus-commission' ? 'Salary + Commission' : 'Commission',
+          status: recorded?.status ?? 'unpaid',
+          internalGenerated: settlement.totalGenerated,
+          commissionBasis: settlement.commissionBasisGenerated,
+          commissionPercent: settlement.commissionPercent,
+          salary: settlement.baseSalary,
+          commission: settlement.commissionCalculated,
+          totalDue: settlement.finalPayout,
+          loadCount: settlement.shipments.length,
+        };
+      });
+      const totalDue = round2(payslips.reduce((sum, slip) => sum + slip.totalDue, 0));
+      return {
+        title: filters.employeeId ? 'Employee Pay Slip' : 'Employee Pay & Commission Slips',
+        subtitle,
+        summary: [{ label: 'Slips', value: String(payslips.length) }, { label: 'Total payroll', value: formatCurrency(totalDue) }],
+        sheets: [{
+          name: 'Pay Slip Register',
+          columns: [{ header: 'Month' }, { header: 'Employee' }, { header: 'Working agency' }, { header: 'Employee basis' }, { header: 'Type' }, { header: 'Salary', numeric: true, currency: true }, { header: 'Commission', numeric: true, currency: true }, { header: 'Total due', numeric: true, currency: true }],
+          rows: payslips.map((slip) => [monthLabel(slip.month), slip.employeeName, slip.agencyName ?? '—', slip.agencyBasisPercent == null ? '—' : `${slip.agencyBasisPercent}/${100 - slip.agencyBasisPercent}`, slip.compensationLabel, round2(slip.salary), round2(slip.commission), round2(slip.totalDue)]),
+          totals: ['Total', null, null, null, null, round2(payslips.reduce((sum, slip) => sum + slip.salary, 0)), round2(payslips.reduce((sum, slip) => sum + slip.commission, 0)), totalDue],
+        }],
+        payslips,
       };
     }
   }

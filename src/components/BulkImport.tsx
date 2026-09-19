@@ -127,8 +127,8 @@ export default function BulkImport({ onClose }: { onClose: () => void }) {
     const drafts = result.rows
       .map((row) => row.draft)
       .filter((draft) => draft !== null)
-      // Rows imported straight to 'Agency Paid' are earned on arrival, so they
-      // record the shares in force now, exactly as the shipment form does.
+      // Legacy Agency Paid rows are converted by the importer to the separate
+      // agency-payment field, so they record the shares in force on arrival.
       .map((draft) => freezeCommissionSplit(draft, data.partners));
     if (drafts.length === 0) return;
 
@@ -412,7 +412,7 @@ export default function BulkImport({ onClose }: { onClose: () => void }) {
               {imported} shipment{imported === 1 ? '' : 's'} imported
             </h3>
             <p className="muted" style={{ marginTop: 6 }}>
-              They're on the Shipments screen now. Only the ones marked <strong>Agency Paid</strong>{' '}
+              They're on the Shipments screen now. Only the ones with an <strong>agency payment recorded</strong>{' '}
               have credited anyone's balance.
             </p>
           </div>

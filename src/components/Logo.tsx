@@ -11,7 +11,6 @@
 import iconOnly from '@/assets/brand/icon-only.png';
 import stackedLayout from '@/assets/brand/stacked_layout.png';
 import primaryFullColour from '@/assets/brand/primary_full_color_logo.png';
-import faviconAppIcon from '@/assets/brand/favicon_appicon.png';
 import sidebarAppIcon from '@/assets/brand/sidebar_app_icon.png';
 
 export const BRAND = {
@@ -27,8 +26,12 @@ export const LOGO_FILES = {
   stacked: stackedLayout,
   /** Mark beside the wordmark with the tagline — login header. */
   primary: primaryFullColour,
-  /** Rounded navy tile — browser tab and Windows app icon. */
-  appIcon: faviconAppIcon,
+  /**
+   * Tight square mark for the browser tab. The older favicon source has wide
+   * transparent padding, which makes the TG mark render far too small at the
+   * browser's 16px favicon size.
+   */
+  appIcon: sidebarAppIcon,
   sidebarIcon: sidebarAppIcon,
 } as const;
 

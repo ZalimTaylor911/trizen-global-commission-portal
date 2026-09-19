@@ -9,12 +9,14 @@
 import { allocate, allocateEqually, round2 } from './money';
 import {
   DEAD_STATUSES,
-  EARNING_STATUS,
+  LEGACY_AGENCY_PAID_STATUS,
   SHIPMENT_STATUSES,
   SHIPMENT_TYPES,
   type Agency,
   type CommissionShare,
+  type CommissionTier,
   type Expense,
+  type Employee,
   type Partner,
   type Shipment,
   type ShipmentStatus,
@@ -26,8 +28,124 @@ export interface DataSet {
   shipments: Shipment[];
   agencies: Agency[];
   partners: Partner[];
+  employees?: Employee[];
+  employeeSettlements?: import('./types').EmployeeSettlementRecord[];
   expenses: Expense[];
   withdrawals: Withdrawal[];
+}
+
+function isEmployeeShipment(shipment: Shipment): boolean {
+  return shipment.ownerType === 'employee' && Boolean(shipment.employeeId);
+}
+
+export interface EmployeeSettlement {
+  employeeId: string;
+  employeeName: string;
+  month: string;
+  shipments: Shipment[];
+  totalGenerated: number;
+  /** Business at the employee-facing agency split; this selects their tier. */
+  commissionBasisGenerated: number;
+  applicableTier: CommissionTier | null;
+  commissionPercent: number;
+  commissionCalculated: number;
+  baseSalary: number;
+  maxCommissionPercent: number;
+  /** True when no configured tier covered the month's final business total. */
+  usesMaximumRateFallback: boolean;
+  finalPayout: number;
+  amountRemainingForPartners: number;
+  /** Each load's portion of the final payout, used for partner allocation. */
+  payoutByShipmentId: Record<string, number>;
+}
+
+/**
+ * Monthly employee settlement. Only agency-paid loads are real money. Terms
+ * The approved employee profile supplies the current tier and employee-facing
+ * agency basis until a settlement is paid. This is deliberate: loads are often
+ * booked before an admin finishes configuring a newly registered employee, and
+ * the provisional 0% registration shell must never erase a real tier. Once a
+ * settlement is paid, its saved `EmployeeSettlementRecord` is the immutable
+ * accounting source of truth.
+ */
+export function computeEmployeeSettlements(data: DataSet): EmployeeSettlement[] {
+  const employees = new Map((data.employees ?? []).map((employee) => [employee.id, employee]));
+  const groups = new Map<string, Shipment[]>();
+  for (const shipment of data.shipments) {
+    if (!isEarned(shipment) || !isEmployeeShipment(shipment)) continue;
+    // Settlement month is the month cash arrived from the agency, not the
+    // month the load moved. Legacy loads fall back to their recorded month.
+    const earnedMonth = shipment.agencyPaidAt?.slice(0, 7) || shipment.agencyPaidDate?.slice(0, 7) || shipment.month;
+    const key = `${earnedMonth}:${shipment.employeeId}`;
+    groups.set(key, [...(groups.get(key) ?? []), shipment]);
+  }
+
+  return [...groups.entries()].map(([key, shipments]) => {
+    const [month, employeeId] = key.split(':');
+    const employee = employees.get(employeeId!);
+    const totalGenerated = round2(shipments.reduce((sum, shipment) => sum + shipment.netMargin, 0));
+    const employeeBasisPercent = employee?.agencyBasisPercent;
+    const commissionBasisGenerated = round2(shipments.reduce(
+      (sum, shipment) => {
+        const basisPercent = employeeBasisPercent ?? shipment.employeeCommissionBasisPercent;
+        return sum + (basisPercent == null
+          ? shipment.netMargin // legacy loads retain the original real-net behaviour
+          : shipment.grossMargin * (basisPercent / 100));
+      },
+      0,
+    ));
+    const compensationType = employee?.compensationType ?? 'commission';
+    const capturedTiers = shipments.find((shipment) => shipment.employeeCommissionTiers?.length)?.employeeCommissionTiers;
+    // Prefer a configured live profile. The records created during employee
+    // registration contain a 0% placeholder tier/cap, and old loads may have
+    // captured that placeholder before the admin configured the real terms.
+    // Salary-only rows retain the captured calculated value for reporting;
+    // it is never included in their final payroll payout.
+    const tiers = compensationType === 'salary'
+      ? capturedTiers ?? employee?.commissionTiers ?? []
+      : employee?.commissionTiers?.length
+        ? employee.commissionTiers
+        : capturedTiers ?? [];
+    const capturedMaximumRate = shipments.find((shipment) => shipment.employeeMaxCommissionPercent != null)?.employeeMaxCommissionPercent;
+    const configuredMaximumRate = compensationType === 'salary'
+      ? capturedMaximumRate ?? employee?.maxCommissionPercent ?? null
+      : employee?.maxCommissionPercent ?? capturedMaximumRate ?? null;
+    // The maximum rate is the fallback for a business total that falls outside
+    // every configured tier. A matching tier always wins; this is not a cap.
+    const maxCommissionPercent = Math.max(0, configuredMaximumRate ?? 0);
+    const applicableTier = [...tiers]
+      .sort((a, b) => b.minBusiness - a.minBusiness)
+      .find((tier) => commissionBasisGenerated >= tier.minBusiness && (tier.maxBusiness == null || commissionBasisGenerated <= tier.maxBusiness))
+      ?? null;
+    const configuredPercent = applicableTier?.commissionPercent ?? maxCommissionPercent;
+    const commissionPercent = configuredPercent;
+    // One final-monthly rate applies to every dollar of that month's business.
+    const commissionCalculated = round2(commissionBasisGenerated * (commissionPercent / 100));
+    const baseSalary = compensationType === 'salary' || compensationType === 'salary-plus-commission'
+      ? round2(employee?.monthlySalary ?? 0)
+      : 0;
+    const finalPayout = round2(baseSalary + (compensationType === 'salary' ? 0 : commissionCalculated));
+    const payoutParts = allocate(finalPayout, shipments.map((shipment) => shipment.netMargin));
+    const payoutByShipmentId: Record<string, number> = {};
+    shipments.forEach((shipment, index) => { payoutByShipmentId[shipment.id] = payoutParts[index] ?? 0; });
+    return {
+      employeeId: employeeId!,
+      employeeName: employee?.name ?? 'Former employee',
+      month: month!,
+      shipments,
+      totalGenerated,
+      commissionBasisGenerated,
+      applicableTier,
+      commissionPercent,
+      commissionCalculated,
+      baseSalary,
+      maxCommissionPercent,
+      usesMaximumRateFallback: applicableTier === null,
+      finalPayout,
+      amountRemainingForPartners: round2(totalGenerated - finalPayout),
+      payoutByShipmentId,
+    };
+  }).sort((a, b) => b.month.localeCompare(a.month) || a.employeeName.localeCompare(b.employeeName));
 }
 
 export interface ShipmentSplit {
@@ -43,8 +161,12 @@ export interface ShipmentSplit {
 }
 
 /** SPEC.md §4 — nothing counts until the agency has actually paid. */
-export function isEarned(shipment: Pick<Shipment, 'status'>): boolean {
-  return shipment.status === EARNING_STATUS;
+export function isAgencyPaid(shipment: Pick<Shipment, 'status' | 'agencyPaid'>): boolean {
+  return shipment.agencyPaid === true || (shipment.status as string) === LEGACY_AGENCY_PAID_STATUS;
+}
+
+export function isEarned(shipment: Pick<Shipment, 'status' | 'agencyPaid'>): boolean {
+  return isAgencyPaid(shipment);
 }
 
 /** Partners eligible to receive commission, in a stable order. */
@@ -79,7 +201,7 @@ export function computeNetMargin(grossMargin: number, agency: Agency | undefined
  * The shares a shipment's commission should be divided by.
  *
  * A load earned under an older set of shares keeps them: `commissionSplit` is
- * stamped onto the shipment when it reaches 'Agency Paid' (see
+ * stamped onto the shipment when it is marked agency paid (see
  * `freezeCommissionSplit`), so editing a partner's percentage today cannot
  * re-spread money that was already earned and possibly drawn against.
  *
@@ -104,10 +226,10 @@ export function sharesFor(
  * Called on the way into Firestore rather than on the way out, so the figures
  * are fixed at the moment the agency paid. An existing stamp is never
  * overwritten — that is the whole point of it. A load moved back out of
- * 'Agency Paid' loses its stamp, so re-earning it freezes the shares in force
+ * agency-paid state loses its stamp, so re-earning it freezes the shares in force
  * at that later moment.
  */
-export function freezeCommissionSplit<T extends Pick<Shipment, 'status' | 'commissionSplit'>>(
+export function freezeCommissionSplit<T extends Pick<Shipment, 'status' | 'agencyPaid' | 'agencyPaidAt' | 'commissionSplit'>>(
   shipment: T,
   partners: Partner[],
 ): T {
@@ -190,15 +312,14 @@ export function splitShipment(shipment: Shipment, partners: Partner[]): Shipment
  * including silent partners.
  */
 export function splitExpense(expense: Expense, partners: Partner[]): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const partner of commissionPartners(partners)) result[partner.id] = 0;
   const bearers =
     expense.type === 'operational' ? operationalPartners(partners) : commissionPartners(partners);
 
-  const result: Record<string, number> = {};
-  for (const partner of commissionPartners(partners)) result[partner.id] = 0;
-
   if (bearers.length === 0) return result;
 
-  const amounts = expense.type === 'agency-deduction'
+  const amounts = expense.type === 'agency-deduction' || expense.type === 'employee-compensation'
     ? allocate(expense.amount, bearers.map((partner) => partner.sharePercent))
     : allocateEqually(expense.amount, bearers.length);
   bearers.forEach((partner, index) => {
@@ -220,7 +341,7 @@ export interface PartnerLedger {
   /** earned − operational − deductions − withdrawals */
   balance: number;
   /**
-   * Their share of commission on loads that haven't reached 'Agency Paid' yet —
+   * Their share of commission on loads not yet marked agency paid —
    * money coming, but not theirs to draw against. SPEC.md §26.
    */
   pendingBalance: number;
@@ -245,10 +366,13 @@ export function computeLedgers(data: DataSet): PartnerLedger[] {
 
   for (const shipment of data.shipments) {
     if (isEarned(shipment)) {
-      const split = splitShipment(shipment, data.partners);
-      for (const [partnerId, amount] of Object.entries(split.partnerEarnings)) {
-        if (partnerId in earned) earned[partnerId] = round2(earned[partnerId]! + amount);
-      }
+      const booked = sharesFor(shipment, data.partners);
+      const amounts = allocate(shipment.netMargin, booked.map((share) => share.sharePercent));
+      booked.forEach((share, index) => {
+        if (share.partnerId in earned) {
+          earned[share.partnerId] = round2(earned[share.partnerId]! + (amounts[index] ?? 0));
+        }
+      });
       continue;
     }
 
@@ -302,7 +426,7 @@ export function computeLedgers(data: DataSet): PartnerLedger[] {
 export interface FinancialSummary {
   /** Every shipment on file, whatever its status. */
   totalLoads: number;
-  /** Shipments that have reached 'Agency Paid'. */
+  /** Shipments whose agency payment has been recorded. */
   earnedLoads: number;
   /** Customer billing (AR) on earned loads. */
   totalRevenue: number;
@@ -376,6 +500,11 @@ export function computeFinancialSummary(data: DataSet): FinancialSummary {
       .filter((e) => e.type === 'agency-deduction')
       .reduce((sum, e) => sum + e.amount, 0),
   );
+  const totalEmployeeCompensation = round2(
+    data.expenses
+      .filter((e) => e.type === 'employee-compensation')
+      .reduce((sum, e) => sum + e.amount, 0),
+  );
   const totalWithdrawals = round2(data.withdrawals.reduce((sum, w) => sum + w.amount, 0));
 
   return {
@@ -389,7 +518,7 @@ export function computeFinancialSummary(data: DataSet): FinancialSummary {
     totalTeamCommission,
     totalOperationalExpenses,
     totalAgencyDeductions,
-    totalExpenses: round2(totalOperationalExpenses + totalAgencyDeductions),
+    totalExpenses: round2(totalOperationalExpenses + totalAgencyDeductions + totalEmployeeCompensation),
     totalWithdrawals,
     totalOutstandingBalance: round2(ledgers.reduce((sum, l) => sum + l.balance, 0)),
     grossMarginPercent: totalRevenue > 0 ? round2((totalGrossMargin / totalRevenue) * 100) : 0,
@@ -437,13 +566,12 @@ export function computeMonthlySummaries(data: DataSet): MonthlySummary[] {
 
   for (const shipment of data.shipments) {
     if (!isEarned(shipment)) continue;
-    const split = splitShipment(shipment, data.partners);
     const entry = bucket(shipment.month);
     entry.loadsMoved += 1;
     entry.revenue = round2(entry.revenue + shipment.ar);
     entry.grossMargin = round2(entry.grossMargin + shipment.grossMargin);
     entry.netMargin = round2(entry.netMargin + shipment.netMargin);
-    entry.teamCommission = round2(entry.teamCommission + split.teamCommission);
+    entry.teamCommission = round2(entry.teamCommission + shipment.netMargin);
   }
 
   for (const expense of data.expenses) {
@@ -496,7 +624,7 @@ export function computeAgencySummaries(data: DataSet): AgencySummary[] {
       grossMargin = round2(grossMargin + shipment.grossMargin);
       netMargin = round2(netMargin + shipment.netMargin);
       agencyEarnings = round2(agencyEarnings + split.agencyEarnings);
-      teamEarnings = round2(teamEarnings + split.teamCommission);
+      teamEarnings = round2(teamEarnings + shipment.netMargin);
     }
 
     return {
@@ -547,7 +675,7 @@ export function computeOperationsSummary(shipments: Shipment[]): OperationsSumma
     completed: count('Completed'),
     billed: count('Billed'),
     customerPaid: count('Customer Paid'),
-    agencyPaid: count('Agency Paid'),
+    agencyPaid: shipments.filter(isAgencyPaid).length,
     claims: count('Claim'),
     disputes: count('Issue / Dispute'),
     tonu: count('TONU'),

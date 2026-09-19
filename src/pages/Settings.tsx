@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Receipt,
   ShieldCheck,
+  Trash2,
   Upload,
   Users,
 } from 'lucide-react';
@@ -18,15 +19,16 @@ import {
   SETTINGS_DOC_ID,
   settingsCol,
   usersCol,
+  employeesCol,
   type AppSettings,
   type UserRecord,
 } from '@/firebase/collections';
-import { upsertWithId } from '@/firebase/repository';
+import { deleteRecord, updateRecord, upsertWithId } from '@/firebase/repository';
 import { SHIPMENT_STATUSES, PAYMENT_TERMS, paymentTermsLabel } from '@/domain/types';
 import { computeNotifications } from '@/domain/notifications';
 import { initialsOf } from '@/lib/avatar';
 import { saveOutput } from '@/lib/export/save';
-import { Banner, Card, Field, Modal, Spinner } from '@/components/ui';
+import { Banner, Card, ConfirmDialog, Field, Modal, Spinner } from '@/components/ui';
 
 export default function Settings() {
   const { actor, user } = useAuth();
@@ -40,6 +42,8 @@ export default function Settings() {
 
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
+  const [deletingUser, setDeletingUser] = useState<UserRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [linking, setLinking] = useState(false);
 
   const [restoring, setRestoring] = useState(false);
@@ -50,6 +54,27 @@ export default function Settings() {
     const snapshot = await getDocs(usersCol);
     setUsers(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as UserRecord));
   }, []);
+
+  async function permanentlyDeleteUser() {
+    if (!deletingUser || !actor || deletingUser.id === user?.uid) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteRecord(usersCol, {
+        entity: 'user',
+        label: deletingUser.name || deletingUser.email || deletingUser.id,
+        actor,
+        id: deletingUser.id,
+        previous: deletingUser as unknown as Record<string, unknown>,
+      });
+      setDeletingUser(null);
+      await loadUsers();
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   useEffect(() => {
     void (async () => {
@@ -182,6 +207,8 @@ export default function Settings() {
   if (loading) return <Spinner label="Loading settings…" />;
 
   const partnerById = new Map(data.partners.map((partner) => [partner.id, partner]));
+  const employeeById = new Map(data.employees.map((employee) => [employee.id, employee]));
+  const pendingUsers = users.filter((entry) => entry.status === 'pending');
 
   return (
     <div className="page">
@@ -194,6 +221,11 @@ export default function Settings() {
 
       {error && <Banner tone="error">{error}</Banner>}
       {settingsMessage && <Banner tone="info">{settingsMessage}</Banner>}
+
+      {pendingUsers.length > 0 && <Banner tone="warning">
+        <strong>{pendingUsers.length} employee registration{pendingUsers.length === 1 ? '' : 's'} awaiting approval.</strong>{' '}
+        Open the user row below, select the configured employee profile, and save to approve access.
+      </Banner>}
 
       <div className="section-title">Users and roles</div>
       <Card flush>
@@ -237,19 +269,22 @@ export default function Settings() {
                   <td className="muted">{entry.email || '—'}</td>
                   <td>
                     <span className={entry.role === 'admin' ? 'badge warn' : 'badge neutral'}>
-                      {entry.role === 'admin' ? 'Administrator' : 'User'}
+                      {entry.status === 'pending' ? 'Pending employee' : entry.role === 'admin' ? 'Administrator' : entry.role === 'employee' ? 'Employee' : 'User'}
                     </span>
                   </td>
                   <td className="muted">
-                    {partnerById.get(entry.partnerId)?.name ?? (
+                    {entry.status === 'pending' ? <span className="badge warn">Approval required</span> : entry.role === 'employee' ? employeeById.get(entry.employeeId ?? '')?.name ?? <span className="badge danger">Not linked</span> : partnerById.get(entry.partnerId)?.name ?? (
                       <span className="badge danger">Not linked</span>
                     )}
                   </td>
                   <td>
                     <div className="row-actions">
-                      <button className="btn ghost small" onClick={() => setEditingUser(entry)}>
-                        Edit
-                      </button>
+                        <button className="btn ghost small" onClick={() => setEditingUser(entry)}>
+                          Edit
+                        </button>
+                        <button className="btn ghost small" disabled={entry.id === user?.uid} onClick={() => setDeletingUser(entry)} title={entry.id === user?.uid ? 'You cannot delete your own account' : 'Delete user permanently'} aria-label={`Delete ${entry.name || entry.email}`}>
+                          <Trash2 size={14} />
+                        </button>
                     </div>
                   </td>
                 </tr>
@@ -262,9 +297,8 @@ export default function Settings() {
       <Banner tone="info">
         <ShieldCheck size={16} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>
-          Login accounts are created in the Firebase console under{' '}
-          <strong>Authentication → Users</strong> — that needs a server-side key the portal doesn't
-          have on the free plan. Once an account exists, add it below with its User UID.
+          Employees can register with Google from the login screen. Their request appears here as
+          pending; approval links the permanent Firebase UID to the employee profile.
         </span>
       </Banner>
 
@@ -410,16 +444,14 @@ export default function Settings() {
           The statuses a load moves through. These are fixed because the commission and receivable
           rules key off them — <strong>Completed</strong> starts the payment clock,{' '}
           <strong>Billed</strong> records that accounting has actually invoiced the customer (and
-          needs the invoice date), and <strong>Agency Paid</strong> earns the commission.
+          needs the invoice date), while the separate agency-payment action earns the commission.
         </p>
         <div className="inline" style={{ marginTop: 12 }}>
           {SHIPMENT_STATUSES.map((status) => (
             <span
               key={status}
               className={
-                status === 'Agency Paid'
-                  ? 'badge success'
-                  : status === 'Completed' || status === 'Billed'
+                status === 'Completed' || status === 'Billed'
                     ? 'badge warn'
                     : 'badge neutral'
               }
@@ -465,6 +497,7 @@ export default function Settings() {
         <UserDialog
           record={editingUser}
           partners={data.partners}
+          employees={data.employees}
           onClose={() => setEditingUser(null)}
           onSaved={() => void loadUsers()}
         />
@@ -474,11 +507,20 @@ export default function Settings() {
         <UserDialog
           record={{ id: '', email: '', name: '', role: 'partner', partnerId: '' }}
           partners={data.partners}
+          employees={data.employees}
           isNew
           onClose={() => setLinking(false)}
           onSaved={() => void loadUsers()}
         />
       )}
+
+      {deletingUser && <ConfirmDialog
+        title="Delete user permanently"
+        message={`This permanently removes ${deletingUser.name || deletingUser.email || 'this user'}'s portal profile and access. Their Firebase Authentication account must still be removed separately from Firebase Console. Continue?`}
+        busy={deleting}
+        onCancel={() => setDeletingUser(null)}
+        onConfirm={() => void permanentlyDeleteUser()}
+      />}
     </div>
   );
 }
@@ -504,16 +546,19 @@ function SettingsLink({
 function UserDialog({
   record,
   partners,
+  employees,
   isNew = false,
   onClose,
   onSaved,
 }: {
   record: UserRecord;
   partners: { id: string; name: string }[];
+  employees: { id: string; name: string; email?: string }[];
   isNew?: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { actor } = useAuth();
   const [draft, setDraft] = useState(record);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -527,7 +572,18 @@ function UserDialog({
         name: draft.name.trim(),
         role: draft.role,
         partnerId: draft.partnerId,
+        employeeId: draft.employeeId ?? null,
+        status: draft.role === 'employee' && draft.employeeId ? 'approved' : draft.status,
       });
+      if (draft.role === 'employee' && draft.employeeId && actor) {
+        const employee = employees.find((row) => row.id === draft.employeeId);
+        if (employee) {
+          await updateRecord(employeesCol, {
+            entity: 'employee', label: employee.name, actor, id: employee.id,
+            previous: employee as unknown as Record<string, unknown>,
+          }, { userId: draft.id.trim(), email: draft.email.trim() || employee.email });
+        }
+      }
       onSaved();
       onClose();
     } catch (caught) {
@@ -550,7 +606,7 @@ function UserDialog({
           <button
             className="btn primary"
             onClick={() => void save()}
-            disabled={busy || draft.id.trim().length < 6 || !draft.partnerId}
+            disabled={busy || draft.id.trim().length < 6 || (draft.role !== 'employee' && !draft.partnerId) || (draft.role === 'employee' && !draft.employeeId)}
           >
             {busy ? 'Saving…' : 'Save'}
           </button>
@@ -596,11 +652,19 @@ function UserDialog({
           }
         >
           <option value="partner">User — runs the business, can't move money</option>
+          <option value="employee">Employee — assigned shipments and customers only</option>
           <option value="admin">Administrator — unrestricted</option>
         </select>
       </Field>
 
-      <Field label="Linked partner" help="Whose earnings this login sees as their own.">
+      {draft.role === 'employee' && <Field label="Linked employee" help="This controls which shipments, customers, settlements and slips the login can access.">
+        <select value={draft.employeeId ?? ''} onChange={(event) => setDraft({ ...draft, employeeId: event.target.value || null })}>
+          <option value="">Select an employee…</option>
+          {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
+        </select>
+      </Field>}
+
+      {draft.role !== 'employee' && <Field label="Linked partner" help="Whose earnings this login sees as their own.">
         <select
           value={draft.partnerId}
           onChange={(event) => setDraft({ ...draft, partnerId: event.target.value })}
@@ -612,7 +676,7 @@ function UserDialog({
             </option>
           ))}
         </select>
-      </Field>
+      </Field>}
     </Modal>
   );
 }

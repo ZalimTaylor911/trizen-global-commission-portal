@@ -2,16 +2,16 @@ import { useMemo, useState } from 'react';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useData } from '@/context/DataContext';
-import { agenciesCol } from '@/firebase/collections';
+import { agenciesCol, employeesCol } from '@/firebase/collections';
 import { createRecord, deleteRecord, updateRecord } from '@/firebase/repository';
 import { computeAgencySummaries, validateAgency } from '@/domain/engine';
 import { formatCurrency } from '@/domain/money';
 import { Banner, Card, ConfirmDialog, Field, Modal, Spinner } from '@/components/ui';
-import type { Agency } from '@/domain/types';
+import { agencyPaymentEligibilityFor, type Agency } from '@/domain/types';
 
 type Draft = Omit<Agency, 'id' | 'createdAt' | 'updatedAt'>;
 
-const EMPTY: Draft = { name: '', agentPercent: 50, agencyPercent: 50, active: true };
+const EMPTY: Draft = { name: '', agentPercent: 50, agencyPercent: 50, employeeCommissionBasisPercent: null, agencyPaymentEligibility: 'customer-paid', active: true };
 
 export default function Agencies() {
   const { actor } = useAuth();
@@ -54,6 +54,12 @@ export default function Agencies() {
           },
           draft,
         );
+        const disclosedBasis = draft.employeeCommissionBasisPercent ?? draft.agentPercent;
+        await Promise.all(data.employees.filter((employee) => employee.agencyId === editing.id).map((employee) => updateRecord(
+          employeesCol,
+          { entity: 'employee', label: employee.name, actor, id: employee.id, previous: employee as unknown as Record<string, unknown> },
+          { agencyName: draft.name, agencyBasisPercent: disclosedBasis },
+        )));
       } else {
         await createRecord(agenciesCol, { entity: 'agency', label: draft.name, actor }, draft);
       }
@@ -92,7 +98,7 @@ export default function Agencies() {
       await createRecord(
         agenciesCol,
         { entity: 'agency', label: 'GLT Logistics', actor },
-        { name: 'GLT Logistics', agentPercent: 50, agencyPercent: 50, active: true },
+        { name: 'GLT Logistics', agentPercent: 50, agencyPercent: 50, employeeCommissionBasisPercent: null, agencyPaymentEligibility: 'customer-paid', active: true },
       );
     } catch (caught) {
       setError((caught as Error).message);
@@ -131,6 +137,7 @@ export default function Agencies() {
                 <th>Agency</th>
                 <th className="num">Team %</th>
                 <th className="num">Agency %</th>
+                <th>Agency payment</th>
                 <th>Status</th>
                 <th className="num">Paid Loads</th>
                 <th className="num">Net Margin</th>
@@ -142,7 +149,7 @@ export default function Agencies() {
             <tbody>
               {data.agencies.length === 0 && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className="empty">
                       <strong>No agencies yet</strong>
                       <span>Add the brokerages you work with, or start with the one on file.</span>
@@ -164,6 +171,7 @@ export default function Agencies() {
                     </td>
                     <td className="num">{agency.agentPercent}%</td>
                     <td className="num">{agency.agencyPercent}%</td>
+                    <td>{agencyPaymentEligibilityFor(agency) === 'billed' ? 'After billing' : 'After customer payment'}</td>
                     <td>
                       <span className={agency.active ? 'badge success' : 'badge neutral'}>
                         {agency.active ? 'Active' : 'Inactive'}
@@ -244,7 +252,10 @@ function AgencyForm({
   onCancel: () => void;
   onSave: (draft: Draft) => void;
 }) {
-  const [draft, setDraft] = useState<Draft>({ ...(initial as Draft) });
+  const [draft, setDraft] = useState<Draft>(() => ({
+    ...(initial as Draft),
+    agencyPaymentEligibility: agencyPaymentEligibilityFor(initial as Agency),
+  }));
   const problem = validateAgency(draft);
 
   /** The two percentages always total 100, so moving one moves the other. */
@@ -308,6 +319,37 @@ function AgencyForm({
           />
         </Field>
       </div>
+
+      <Field
+        label="Agency payment eligibility"
+        help="Controls when an admin can mark a shipment agency paid. OHT pays after billing; GLT pays after the customer pays. The payment timestamp is saved automatically when the admin marks it paid."
+      >
+        <select
+          value={draft.agencyPaymentEligibility ?? 'customer-paid'}
+          onChange={(e) => setDraft((prev) => ({ ...prev, agencyPaymentEligibility: e.target.value as Draft['agencyPaymentEligibility'] }))}
+        >
+          <option value="billed">After shipment is billed (OHT)</option>
+          <option value="customer-paid">After customer payment (GLT)</option>
+        </select>
+      </Field>
+
+      <Field
+        label="Employee commission basis %"
+        help="Optional disclosed team share for employee-owned loads. Example: keep the real split at 75/25, enter 60 here, and employee tiers/commission use 60% while company and partner books retain 75%. Leave blank to use the real team share."
+      >
+        <input
+          type="number"
+          min={0}
+          max={100}
+          step="0.01"
+          value={draft.employeeCommissionBasisPercent ?? ''}
+          placeholder={`Same as team share (${draft.agentPercent}%)`}
+          onChange={(e) => setDraft((prev) => ({
+            ...prev,
+            employeeCommissionBasisPercent: e.target.value === '' ? null : Number(e.target.value),
+          }))}
+        />
+      </Field>
 
       {problem && <Banner tone="error">{problem}</Banner>}
 

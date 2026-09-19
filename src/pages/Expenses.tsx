@@ -71,11 +71,13 @@ export default function Expenses() {
   const totals = useMemo(() => {
     let operational = 0;
     let deductions = 0;
+    let employeePayroll = 0;
     for (const expense of filtered) {
       if (expense.type === 'operational') operational += expense.amount;
-      else deductions += expense.amount;
+      else if (expense.type === 'agency-deduction') deductions += expense.amount;
+      else employeePayroll += expense.amount;
     }
-    return { operational, deductions, all: operational + deductions };
+    return { operational, deductions, employeePayroll, all: operational + deductions + employeePayroll };
   }, [filtered]);
 
   async function handleSave(draft: Draft) {
@@ -180,6 +182,7 @@ export default function Expenses() {
       <div className="tiles">
         <Tile label="Operational" value={formatCurrency(totals.operational)} />
         <Tile label="Agency deductions" value={formatCurrency(totals.deductions)} />
+        <Tile label="Employee payroll" value={formatCurrency(totals.employeePayroll)} />
         <Tile label="Total" value={formatCurrency(totals.all)} accent />
       </div>
 
@@ -192,6 +195,7 @@ export default function Expenses() {
               <option value="">All types</option>
               <option value="operational">Operational</option>
               <option value="agency-deduction">Agency deduction</option>
+              <option value="employee-compensation">Employee settlement</option>
             </select>
           </Field>
           <Field label="Month">
@@ -241,16 +245,17 @@ export default function Expenses() {
               )}
               {filtered.map((expense) => {
                 const split = splitExpense(expense, data.partners);
-                const bearers =
-                  expense.type === 'operational' ? opexPartners : allPartners;
+                const bearers = expense.type === 'employee-compensation'
+                  ? []
+                  : expense.type === 'operational' ? opexPartners : allPartners;
                 const each = bearers.length > 0 ? split[bearers[0]!.id] ?? 0 : 0;
                 return (
                   <tr key={expense.id}>
                     <td className="nowrap">{formatDate(expense.date)}</td>
                     <td>{categoryById.get(expense.categoryId)?.name ?? <span className="muted">Uncategorised</span>}</td>
                     <td>
-                      <span className={expense.type === 'operational' ? 'badge info' : 'badge warn'}>
-                        {expense.type === 'operational' ? 'Operational' : 'Agency deduction'}
+                      <span className={expense.type === 'operational' ? 'badge info' : expense.type === 'employee-compensation' ? 'badge positive' : 'badge warn'}>
+                        {expense.type === 'operational' ? 'Operational' : expense.type === 'employee-compensation' ? 'Employee settlement' : 'Agency deduction'}
                       </span>
                     </td>
                     <td className="num">{formatCurrency(expense.amount)}</td>
@@ -358,7 +363,7 @@ function ExpenseForm({
           <button
             className="btn primary"
             onClick={() => onSave({ ...draft, month: monthOf(draft.date) })}
-            disabled={busy || draft.amount <= 0 || !draft.categoryId}
+            disabled={busy || draft.amount <= 0 || (!draft.categoryId && draft.type !== 'employee-compensation')}
           >
             {busy ? 'Saving…' : 'Save expense'}
           </button>

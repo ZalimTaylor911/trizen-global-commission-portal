@@ -14,13 +14,12 @@ export const SHIPMENT_STATUSES = [
   'TONU',
   'Customer Paid',
   'Issue / Dispute',
-  'Agency Paid',
 ] as const;
 
 export type ShipmentStatus = (typeof SHIPMENT_STATUSES)[number];
 
-/** Commission is earned only once a shipment reaches this status. SPEC.md §4. */
-export const EARNING_STATUS: ShipmentStatus = 'Agency Paid';
+/** Historical records used this as a shipment status; new records use `agencyPaid`. */
+export const LEGACY_AGENCY_PAID_STATUS = 'Agency Paid';
 
 /**
  * Delivered *and* the POD is in the brokerage's TMS, so the load is ready for
@@ -49,8 +48,13 @@ export const AR_OPEN_STATUSES: readonly ShipmentStatus[] = [
   'Issue / Dispute',
 ];
 
-/** The customer has paid; the receivable is closed regardless of the agency. */
-export const AR_SETTLED_STATUSES: readonly ShipmentStatus[] = ['Customer Paid', 'Agency Paid'];
+/** The customer has paid; the receivable is closed regardless of agency payment. */
+export const AR_SETTLED_STATUSES: readonly ShipmentStatus[] = ['Customer Paid'];
+
+/** Legacy Agency Paid rows were GLT customer-paid rows, so their AR is settled too. */
+export function isCustomerPaymentSettled(status: ShipmentStatus | string): boolean {
+  return status === 'Customer Paid' || status === LEGACY_AGENCY_PAID_STATUS;
+}
 
 /**
  * Written off — never becomes revenue, never becomes a receivable, and never
@@ -68,7 +72,7 @@ export type ShipmentType = (typeof SHIPMENT_TYPES)[number];
  * value is kept as-is so existing `users/{uid}` documents don't need migrating;
  * the UI labels it "User". SPEC.md §25.
  */
-export type UserRole = 'admin' | 'partner';
+export type UserRole = 'admin' | 'partner' | 'employee';
 
 /** Standard net terms, plus 0 for due-on-receipt. Customers may use any number. */
 export const PAYMENT_TERMS = [
@@ -104,6 +108,12 @@ export interface Customer {
    * its agency dropdown to these. Empty means "any agency".
    */
   agencyIds: string[];
+  /** Employees allowed to work this customer in the restricted employee portal. */
+  assignedEmployeeIds?: string[];
+  /** Auth UIDs used for secure employee-side customer queries. */
+  assignedEmployeeUserIds?: string[];
+  /** Normalised login emails used as a last-resort cross-device assignment key. */
+  assignedEmployeeEmails?: string[];
   active: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -116,9 +126,28 @@ export interface Agency {
   agentPercent: number;
   /** Percentage of net margin the brokerage keeps. 0–100. Must sum to 100 with agentPercent. */
   agencyPercent: number;
+  /**
+   * The team percentage used only to calculate an employee's disclosed
+   * commission basis. The real agency split above remains the company book.
+   * Empty means employee commission uses the real team percentage.
+   */
+  employeeCommissionBasisPercent?: number | null;
+  /** When an agency payment may be recorded against a shipment. */
+  agencyPaymentEligibility?: AgencyPaymentEligibility;
   active: boolean;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export const AGENCY_PAYMENT_ELIGIBILITIES = ['billed', 'customer-paid'] as const;
+export type AgencyPaymentEligibility = (typeof AGENCY_PAYMENT_ELIGIBILITIES)[number];
+
+/** Existing GLT/OHT agency records get their established rules until explicitly saved. */
+export function agencyPaymentEligibilityFor(
+  agency: Pick<Agency, 'name' | 'agencyPaymentEligibility'> | undefined,
+): AgencyPaymentEligibility {
+  if (agency?.agencyPaymentEligibility) return agency.agencyPaymentEligibility;
+  return agency?.name.trim().toLowerCase().startsWith('oht') ? 'billed' : 'customer-paid';
 }
 
 export interface Partner {
@@ -138,6 +167,49 @@ export interface Partner {
   createdAt?: string;
   updatedAt?: string;
 }
+
+/** A commission-only employee. This is deliberately not an HR/payroll record. */
+export interface CommissionTier {
+  /** Inclusive monthly-business floor. */
+  minBusiness: number;
+  /** Inclusive ceiling; null means no upper limit. */
+  maxBusiness: number | null;
+  commissionPercent: number;
+}
+
+export interface Employee {
+  id: string;
+  /** Authenticated employee account linked by an administrator. */
+  userId?: string | null;
+  /** Primary agency this employee works for; internal split terms stay admin-only. */
+  agencyId?: string | null;
+  /** Safe display-only agency name for employee-facing views. */
+  agencyName?: string | null;
+  /** Employee-facing agency basis, e.g. 60 means the employee sees 60/40. */
+  agencyBasisPercent?: number | null;
+  /** Admin-controlled permission to print paid slips. */
+  allowSlipPrinting?: boolean;
+  registrationStatus?: 'pending' | 'approved';
+  name: string;
+  firstName?: string;
+  lastName?: string;
+  contactPhone?: string;
+  address?: string;
+  email?: string;
+  notes?: string;
+  /** One rate is selected from these monthly-business bands, never progressive. */
+  commissionTiers: CommissionTier[];
+  /** Fallback rate when the final monthly business total matches no tier. */
+  maxCommissionPercent: number;
+  /** Salary, commission, or both. Salary is paid once per settled month. */
+  compensationType?: 'commission' | 'salary' | 'salary-plus-commission';
+  monthlySalary?: number;
+  active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type ShipmentOwnerType = 'core-team' | 'employee';
 
 /**
  * One partner's weight in a shipment's commission, captured at the moment the
@@ -181,9 +253,26 @@ export interface Shipment {
   status: ShipmentStatus;
   shipmentType: ShipmentType;
   agencyId: string;
+  /** Core-team loads retain the existing partner distribution unchanged. */
+  ownerType?: ShipmentOwnerType;
+  /** Required for employee-owned loads; absent on legacy/core-team loads. */
+  employeeId?: string | null;
+  /** Employee tier terms frozen when assigned for an auditable settlement. */
+  employeeCommissionTiers?: CommissionTier[] | null;
+  employeeMaxCommissionPercent?: number | null;
+  /** Agency's disclosed team share, frozen so later changes do not rewrite a settlement. */
+  employeeCommissionBasisPercent?: number | null;
+  /** True once an administrator has recorded the agency's payment. */
+  agencyPaid?: boolean;
+  /** Local calendar date recorded when the administrator marks agency payment. */
+  agencyPaidAt?: string | null;
+  /** Local calendar date recorded when the customer is marked paid. */
+  customerPaidAt?: string | null;
+  /** Legacy plain-date field retained only for historic settlement grouping. */
+  agencyPaidDate?: string | null;
   /**
    * The partner shares this load's commission was booked under, frozen when it
-   * reached 'Agency Paid'. Changing a partner's share afterwards must not
+   * was marked agency paid. Changing a partner's share afterwards must not
    * re-spread money that has already been earned and possibly drawn, so the
    * engine prefers this over the live partner records.
    *
@@ -215,7 +304,9 @@ export type ExpenseType =
   /** Shared equally among partners who bear operational expenses. */
   | 'operational'
   /** Agency clawback — shared across active partners by commission share. */
-  | 'agency-deduction';
+  | 'agency-deduction'
+  /** A recorded employee salary/commission settlement; never re-split to partners. */
+  | 'employee-compensation';
 
 export interface ExpenseCategory {
   id: string;
@@ -234,6 +325,28 @@ export interface Expense {
   notes: string;
   /** Optional link back to the shipment an agency deduction came from. */
   shipmentId?: string | null;
+  employeeId?: string | null;
+  /** Prevents recording the same employee/month settlement twice. */
+  employeeSettlementKey?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** A frozen monthly employee payable. It becomes a partner deduction only when paid. */
+export interface EmployeeSettlementRecord {
+  id: string;
+  employeeId: string;
+  month: string;
+  employeeName: string;
+  compensationType: 'commission' | 'salary' | 'salary-plus-commission';
+  totalNetBusiness: number;
+  totalShipments: number;
+  salary: number;
+  commission: number;
+  totalDue: number;
+  status: 'unpaid' | 'paid';
+  paidAt?: string | null;
+  expenseId?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -260,10 +373,13 @@ export type AuditEntity =
   | 'shipment'
   | 'agency'
   | 'partner'
+  | 'employee'
   | 'customer'
   | 'expense'
   | 'expense-category'
   | 'withdrawal'
+  | 'employee-settlement'
+  | 'user'
   | 'session';
 
 export interface AuditEntry {

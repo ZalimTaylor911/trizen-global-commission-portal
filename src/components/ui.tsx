@@ -150,9 +150,9 @@ export function Spinner({ label = 'Loading…' }: { label?: string }) {
   );
 }
 
-/** Colour-codes the shipment workflow so 'Agency Paid' (the only earning state) stands out. */
-export function StatusBadge({ status }: { status: ShipmentStatus }) {
-  const tone: Record<ShipmentStatus, string> = {
+/** Colour-codes operational statuses. Legacy Agency Paid data remains readable. */
+export function StatusBadge({ status }: { status: ShipmentStatus | string }) {
+  const tone: Record<string, string> = {
     Assigned: 'neutral',
     'In Transit': 'info',
     Delivered: 'info',
@@ -163,9 +163,9 @@ export function StatusBadge({ status }: { status: ShipmentStatus }) {
     TONU: 'warn',
     'Customer Paid': 'warn',
     'Issue / Dispute': 'danger',
-    'Agency Paid': 'success',
+    'Agency Paid': 'success', // historical rows only
   };
-  return <span className={`badge ${tone[status]}`}>{status}</span>;
+  return <span className={`badge ${tone[status] ?? 'neutral'}`}>{status}</span>;
 }
 
 export function ConfirmDialog({

@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { doc, setDoc } from 'firebase/firestore';
 import { Link, useNavigate } from 'react-router-dom';
 import { FileSpreadsheet, FileText, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useData } from '@/context/DataContext';
+import { db } from '@/firebase/config';
 import { customersCol } from '@/firebase/collections';
-import { deleteRecord } from '@/firebase/repository';
+import { deleteRecord, updateRecord } from '@/firebase/repository';
 import { computeReceivables, computeCustomerAr } from '@/domain/receivables';
 import { rankCustomers } from '@/domain/customers';
 import { formatCurrency, round2 } from '@/domain/money';
@@ -15,7 +17,7 @@ import { Banner, Card, ConfirmDialog, EmptyState, Field, Spinner } from '@/compo
 import CustomerForm, { EMPTY_CUSTOMER } from './CustomerForm';
 
 export default function CustomerList({ openCreate = false }: { openCreate?: boolean }) {
-  const { isAdmin, actor } = useAuth();
+  const { isAdmin, isEmployee, actor } = useAuth();
   const data = useData();
   const navigate = useNavigate();
 
@@ -25,6 +27,7 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const repairedCustomerIds = useRef(new Set<string>());
 
   const [search, setSearch] = useState('');
   const [agencyFilter, setAgencyFilter] = useState('');
@@ -48,6 +51,66 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
     [data.agencies],
   );
 
+  // Backfill the per-login customer-access index for customers created before
+  // it was introduced. This is deliberately admin-only: employees cannot read
+  // an unassigned legacy document in order to repair it themselves. Once this
+  // runs, employees load the customer through a direct allowed document read,
+  // not an unreliable collection-wide query.
+  useEffect(() => {
+    if (!isAdmin || !actor || data.customers.length === 0 || data.employees.length === 0) return;
+    const employeesById = new Map(data.employees.map((employee) => [employee.id, employee]));
+    const employeesByUserId = new Map(data.employees.filter((employee) => employee.userId).map((employee) => [employee.userId!, employee]));
+    const employeesByEmail = new Map(data.employees.filter((employee) => employee.email).map((employee) => [employee.email!.trim().toLowerCase(), employee]));
+
+    for (const customer of data.customers) {
+      if (repairedCustomerIds.current.has(customer.id)) continue;
+      const linkedEmployees = (customer.assignedEmployeeIds ?? [])
+        .map((id) => employeesById.get(id) ?? employeesByUserId.get(id))
+        .filter((employee, index, rows): employee is typeof data.employees[number] => Boolean(employee) && rows.indexOf(employee) === index);
+      // Legacy records sometimes retained only an email assignment.  Resolve
+      // those too, without changing who the customer is assigned to.
+      const emailLinked = (customer.assignedEmployeeEmails ?? [])
+        .map((email) => employeesByEmail.get(email.trim().toLowerCase()))
+        .filter((employee, index, rows): employee is typeof data.employees[number] => Boolean(employee) && rows.indexOf(employee) === index);
+      const allLinked = [...linkedEmployees, ...emailLinked].filter((employee, index, rows) => rows.findIndex((row) => row.id === employee.id) === index);
+      if (allLinked.length === 0) continue;
+
+      const userIds = [...new Set([...(customer.assignedEmployeeUserIds ?? []), ...allLinked.map((employee) => employee.userId).filter((uid): uid is string => Boolean(uid))])];
+      const emails = [...new Set([...(customer.assignedEmployeeEmails ?? []), ...allLinked.map((employee) => employee.email?.trim()).filter((email): email is string => Boolean(email))])];
+      const missingUserIds = userIds.some((uid) => !(customer.assignedEmployeeUserIds ?? []).includes(uid));
+      const missingEmails = emails.some((email) => !(customer.assignedEmployeeEmails ?? []).includes(email));
+      const assignmentUpdate = missingUserIds || missingEmails
+        ? updateRecord(
+            customersCol,
+            {
+              entity: 'customer',
+              label: customer.companyName,
+              actor,
+              id: customer.id,
+              previous: customer as unknown as Record<string, unknown>,
+            },
+            {
+              assignedEmployeeUserIds: userIds,
+              assignedEmployeeEmails: emails,
+            },
+          )
+        : Promise.resolve();
+      const accessWrites = allLinked
+        .filter((employee) => Boolean(employee.userId))
+        .map((employee) => setDoc(
+          doc(db, 'users', employee.userId!, 'customerAccess', customer.id),
+          { customerId: customer.id, createdAt: customer.createdAt ?? new Date().toISOString() },
+          { merge: true },
+        ));
+
+      repairedCustomerIds.current.add(customer.id);
+      void Promise.all([assignmentUpdate, ...accessWrites]).catch((caught) => {
+        repairedCustomerIds.current.delete(customer.id);
+        console.error('Could not backfill customer employee access', caught);
+      });
+    }
+  }, [isAdmin, actor, data.customers, data.employees]);
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return data.customers.filter((customer) => {
@@ -66,12 +129,28 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
     if (!deleting || !actor) return;
     setBusy(true);
     try {
+      const customerAccessUserIds = new Set(deleting.assignedEmployeeUserIds ?? []);
+      for (const assignedId of deleting.assignedEmployeeIds ?? []) {
+        const employee = data.employees.find((row) => row.id === assignedId || row.userId === assignedId);
+        if (employee?.userId) customerAccessUserIds.add(employee.userId);
+      }
+      for (const email of deleting.assignedEmployeeEmails ?? []) {
+        const employee = data.employees.find((row) => row.email?.trim().toLowerCase() === email.trim().toLowerCase());
+        if (employee?.userId) customerAccessUserIds.add(employee.userId);
+      }
       await deleteRecord(customersCol, {
         entity: 'customer',
         label: deleting.companyName,
         actor,
         id: deleting.id,
         previous: deleting as unknown as Record<string, unknown>,
+        onDelete: ({ batch, id: customerId }) => {
+          // This causes every assigned employee's access listener to drop the
+          // customer immediately; no local site-data clear is required.
+          for (const userId of customerAccessUserIds) {
+            batch.delete(doc(db, 'users', userId, 'customerAccess', customerId));
+          }
+        },
       });
       setDeleting(null);
     } catch (caught) {
@@ -167,22 +246,25 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
           </p>
         </div>
         <div className="page-actions">
-          <button
+          <button className="btn" onClick={data.refresh} title="Refresh customers">
+            <RotateCcw size={15} /> Refresh
+          </button>
+          {!isEmployee && <button
             className="btn"
             onClick={() => void runExport('excel')}
             disabled={exporting !== null || filtered.length === 0}
           >
             <FileSpreadsheet size={15} />
             {exporting === 'excel' ? 'Exporting…' : 'Excel'}
-          </button>
-          <button
+          </button>}
+          {!isEmployee && <button
             className="btn"
             onClick={() => void runExport('pdf')}
             disabled={exporting !== null || filtered.length === 0}
           >
             <FileText size={15} />
             {exporting === 'pdf' ? 'Exporting…' : 'PDF'}
-          </button>
+          </button>}
           <button className="btn primary" onClick={() => setCreating(true)}>
             <Plus size={15} />
             New customer
@@ -191,6 +273,10 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
       </div>
 
       {error && <Banner tone="error">{error}</Banner>}
+      {/* A successful scoped customer snapshot is authoritative. If there are
+          no rows, retain the server error so an outdated Electron build or
+          undeployed Firestore rule does not masquerade as an empty CRM. */}
+      {data.error && data.customers.length === 0 && <Banner tone="error">{data.error}</Banner>}
 
       <Card>
         <div className="filters">
@@ -201,7 +287,7 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
               onChange={(e) => setSearch(e.target.value)}
             />
           </Field>
-          <Field label="Agency">
+          {!isEmployee && <Field label="Agency">
             <select value={agencyFilter} onChange={(e) => setAgencyFilter(e.target.value)}>
               <option value="">All agencies</option>
               {data.agencies.map((agency) => (
@@ -210,7 +296,7 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
                 </option>
               ))}
             </select>
-          </Field>
+          </Field>}
           <Field label="Status">
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="active">Active only</option>
@@ -245,8 +331,7 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
                 <th>Terms</th>
                 <th>Agencies</th>
                 <th className="num">Loads</th>
-                <th className="num">Outstanding</th>
-                <th className="num">Overdue</th>
+                {!isEmployee && <><th className="num">Outstanding</th><th className="num">Overdue</th></>}
                 <th />
               </tr>
             </thead>
@@ -271,16 +356,16 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
                   <tr
                     key={customer.id}
                     style={{ cursor: 'pointer' }}
-                    onClick={() => navigate(`/crm/customers/${customer.id}`)}
+                    onClick={() => { if (!isEmployee) navigate(`/crm/customers/${customer.id}`); }}
                   >
                     <td>
-                      <Link
+                      {!isEmployee ? <Link
                         to={`/crm/customers/${customer.id}`}
                         onClick={(e) => e.stopPropagation()}
                         style={{ fontWeight: 600, color: 'var(--primary)', textDecoration: 'none' }}
                       >
                         {customer.companyName}
-                      </Link>
+                      </Link> : <strong>{customer.companyName}</strong>}
                       {!customer.active && (
                         <span className="badge neutral" style={{ marginLeft: 8 }}>
                           Inactive
@@ -302,23 +387,22 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
                       )}
                     </td>
                     <td className="num">{loadCounts.get(customer.id) ?? 0}</td>
-                    <td className="num">{formatCurrency(ar?.outstanding ?? 0)}</td>
-                    <td className="num">
+                    {!isEmployee && <><td className="num">{formatCurrency(ar?.outstanding ?? 0)}</td><td className="num">
                       {(ar?.overdue ?? 0) > 0 ? (
                         <span className="badge danger">{formatCurrency(ar!.overdue)}</span>
                       ) : (
                         <span className="muted">—</span>
                       )}
-                    </td>
+                    </td></>}
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="row-actions">
-                        <button
+                        {!isEmployee && <button
                           className="btn ghost small"
                           onClick={() => setEditing(customer)}
                           aria-label="Edit"
                         >
                           <Pencil size={14} />
-                        </button>
+                        </button>}
                         {isAdmin && (
                           <button
                             className="btn ghost small"
@@ -346,7 +430,11 @@ export default function CustomerList({ openCreate = false }: { openCreate?: bool
             setEditing(null);
           }}
           onSaved={(id) => {
-            if (!editing) navigate(`/crm/customers/${id}`);
+            data.refresh();
+            // Customer profiles are admin-only. Keep employees on their
+            // scoped customer list after creation so the new record appears
+            // there instead of being redirected to the dashboard.
+            if (!editing && !isEmployee) navigate(`/crm/customers/${id}`);
           }}
         />
       )}

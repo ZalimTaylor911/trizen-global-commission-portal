@@ -3,11 +3,16 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   sendPasswordResetEmail,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  signOut,
   setPersistence,
 } from 'firebase/auth';
 import { ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { auth } from '@/firebase/config';
+import { doc, setDoc } from 'firebase/firestore';
+import { usersCol, employeesCol } from '@/firebase/collections';
 import { Field } from '@/components/ui';
 import { LogoHorizontal } from '@/components/Logo';
 import LoginArt, { hasLoginArt } from '@/components/LoginArt';
@@ -28,6 +33,8 @@ function friendlyError(error: unknown): string {
       return 'Too many failed attempts. Wait a few minutes and try again.';
     case 'auth/network-request-failed':
       return 'No connection to Firebase. Check your internet and try again.';
+    case 'auth/internal-error':
+      return 'Google sign-in could not start. Confirm Google is enabled in Firebase Authentication and this website is listed under Authentication → Settings → Authorized domains.';
     default:
       return (error as Error)?.message ?? 'Could not sign in.';
   }
@@ -42,6 +49,11 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -80,6 +92,38 @@ export default function Login() {
     }
   }
 
+  async function handleRegister(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      await setPersistence(auth, browserLocalPersistence);
+      const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      await sendEmailVerification(credential.user);
+      await setDoc(doc(usersCol, credential.user.uid), {
+        email: email.trim(), name: `${firstName.trim()} ${lastName.trim()}`.trim(),
+        firstName: firstName.trim(), lastName: lastName.trim(), phone: phone.trim(), address: address.trim(),
+        role: 'employee', partnerId: '', employeeId: null, status: 'pending', emailVerified: false,
+      });
+      await setDoc(doc(employeesCol, credential.user.uid), {
+        name: `${firstName.trim()} ${lastName.trim()}`.trim(), firstName: firstName.trim(), lastName: lastName.trim(),
+        email: email.trim(), contactPhone: phone.trim(), address: address.trim(), userId: credential.user.uid,
+        agencyId: null, agencyName: null, agencyBasisPercent: null, allowSlipPrinting: false,
+        compensationType: 'commission', monthlySalary: 0, maxCommissionPercent: 0,
+        commissionTiers: [{ minBusiness: 0, maxBusiness: null, commissionPercent: 0 }],
+        registrationStatus: 'pending', active: false,
+      });
+      await signOut(auth);
+      setRegistering(false);
+      setNotice('Registration submitted. Check your email to verify the account. Admin approval is required before access is enabled.');
+    } catch (caught) {
+      setError(friendlyError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="login-screen">
       <div className="login-card">
@@ -91,13 +135,20 @@ export default function Login() {
           </div>
 
           <div className="login-body">
-            <h1>Welcome Back!</h1>
-            <p className="login-sub">Please log in to your account.</p>
+            <h1>{registering ? 'Create your account' : 'Welcome Back!'}</h1>
+            <p className="login-sub">{registering ? 'Register as a Trizen employee.' : 'Please log in to your account.'}</p>
 
             {error && <div className="banner error">{error}</div>}
             {notice && <div className="banner info">{notice}</div>}
 
-            <form className="login-form" onSubmit={handleSubmit}>
+            {registering ? <form className="login-form" onSubmit={handleRegister}>
+              <div className="field-row"><Field label="First name"><input required value={firstName} onChange={(e) => setFirstName(e.target.value)} /></Field><Field label="Last name"><input required value={lastName} onChange={(e) => setLastName(e.target.value)} /></Field></div>
+              <Field label="Email address"><input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
+              <Field label="Password"><input type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+              <div className="field-row"><Field label="Phone"><input type="tel" required value={phone} onChange={(e) => setPhone(e.target.value)} /></Field><Field label="Address"><input required value={address} onChange={(e) => setAddress(e.target.value)} /></Field></div>
+              <button className="btn primary login-submit" type="submit" disabled={busy}>{busy ? 'Registering…' : 'Register'}</button>
+              <button className="btn" type="button" onClick={() => setRegistering(false)}>Back to login</button>
+            </form> : <form className="login-form" onSubmit={handleSubmit}>
               <Field label="Email address">
                 <input
                   type="email"
@@ -154,16 +205,12 @@ export default function Login() {
                 <button
                   type="button"
                   className="btn login-secondary"
-                  onClick={() =>
-                    setNotice(
-                      'Accounts are created by the administrator in the Firebase console, then linked under Settings. Ask Shabbir to set one up for you.',
-                    )
-                  }
+                  onClick={() => { setRegistering(true); setError(null); setNotice(null); }}
                 >
                   Create account
                 </button>
               </div>
-            </form>
+            </form>}
           </div>
 
           <p className="login-footnote">
@@ -181,7 +228,7 @@ export default function Login() {
               <h2>Every load, every split, in one place.</h2>
               <p>
                 Commission, receivables and partner balances —<br />
-                worked out the moment a load is marked Agency Paid.
+                worked out the moment an agency payment is recorded.
               </p>
             </div>
           )}

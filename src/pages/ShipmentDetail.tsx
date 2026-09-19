@@ -1,15 +1,18 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, Circle, Pencil } from 'lucide-react';
+import { ArrowLeft, Check, CheckCircle, Circle, Pencil } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useData } from '@/context/DataContext';
-import { splitShipment } from '@/domain/engine';
+import { computeEmployeeSettlements, freezeCommissionSplit, isAgencyPaid, splitShipment } from '@/domain/engine';
+import { shipmentsCol } from '@/firebase/collections';
+import { updateRecord } from '@/firebase/repository';
+import { ShipmentForm, type Draft } from './Shipments';
 import { computeReceivable } from '@/domain/receivables';
 import { actualTransitDays, deliveryPerformance } from '@/domain/transit';
 import { formatCurrency, round2 } from '@/domain/money';
-import { paymentTermsLabel, type ShipmentStatus } from '@/domain/types';
-import { formatDate } from '@/lib/dates';
-import { Banner, Card, EmptyState, Money, Spinner, StatusBadge, Tile } from '@/components/ui';
+import { agencyPaymentEligibilityFor, LEGACY_AGENCY_PAID_STATUS, paymentTermsLabel, type ShipmentStatus } from '@/domain/types';
+import { formatDate, today } from '@/lib/dates';
+import { Banner, Card, ConfirmDialog, EmptyState, Field, Modal, Money, Spinner, StatusBadge, Tile } from '@/components/ui';
 
 /**
  * The operational path a load walks. Claim, Dissolved, TONU and Issue/Dispute
@@ -23,24 +26,40 @@ const TIMELINE: { status: ShipmentStatus; caption: string }[] = [
   { status: 'Completed', caption: 'POD in the TMS, ready to invoice' },
   { status: 'Billed', caption: 'Invoiced to the customer' },
   { status: 'Customer Paid', caption: 'Customer settled the invoice' },
-  { status: 'Agency Paid', caption: 'Agency paid us — commission earned' },
 ];
 
 const EXCEPTION_STATUSES: ShipmentStatus[] = ['Claim', 'Dissolved', 'TONU', 'Issue / Dispute'];
 
 export default function ShipmentDetail() {
   const { shipmentId } = useParams<{ shipmentId: string }>();
-  const { isAdmin } = useAuth();
+  const { isAdmin, isEmployee, employeeId, actor } = useAuth();
   const data = useData();
   const navigate = useNavigate();
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [agencyPaymentDialog, setAgencyPaymentDialog] = useState(false);
+  const [agencyPaymentDate, setAgencyPaymentDate] = useState(today());
+  const [agencyUnpayConfirm, setAgencyUnpayConfirm] = useState(false);
 
   const shipment = data.shipments.find((row) => row.id === shipmentId);
   const agency = data.agencies.find((row) => row.id === shipment?.agencyId);
   const customer = data.customers.find((row) => row.id === shipment?.customerId);
+  const employee = data.employees.find((row) => row.id === shipment?.employeeId);
+  const canEdit = isAdmin || (isEmployee && shipment?.employeeId === employeeId);
 
   const split = useMemo(
     () => (shipment ? splitShipment(shipment, data.partners) : null),
     [shipment, data.partners],
+  );
+  const employeeSettlement = useMemo(
+    () => shipment?.ownerType === 'employee'
+      ? computeEmployeeSettlements({
+          shipments: data.shipments, agencies: data.agencies, partners: data.partners,
+          employees: data.employees, expenses: data.expenses, withdrawals: data.withdrawals,
+        }).find((row) => row.payoutByShipmentId[shipment.id] !== undefined)
+      : undefined,
+    [shipment, data.shipments, data.agencies, data.partners, data.employees, data.expenses, data.withdrawals],
   );
 
   const receivable = useMemo(
@@ -88,7 +107,75 @@ export default function ShipmentDetail() {
 
   const deductionTotal = round2(deductions.reduce((sum, expense) => sum + expense.amount, 0));
   const profitAfterDeductions = round2(split.teamCommission - deductionTotal);
-  const earned = shipment.status === 'Agency Paid';
+  const earned = isAgencyPaid(shipment);
+  const agencyPaymentEligibility = agencyPaymentEligibilityFor(agency);
+  const canMarkAgencyPaid = !earned && (
+    agencyPaymentEligibility === 'billed'
+      ? shipment.status === 'Billed'
+      : shipment.status === 'Customer Paid'
+  );
+  const employeePayout = employeeSettlement?.payoutByShipmentId[shipment.id] ?? 0;
+  const partnerPool = shipment.ownerType === 'employee'
+    ? round2(shipment.netMargin - employeePayout)
+    : split.teamCommission;
+
+  async function saveEdit(incoming: Draft) {
+    if (!actor || !shipment) return;
+    setBusy(true); setEditError(null);
+    try {
+      const draft = freezeCommissionSplit(incoming, data.partners);
+      await updateRecord(shipmentsCol, {
+        entity: 'shipment', label: `${draft.loadNumber || 'Load'} · ${draft.companyName}`,
+        actor, id: shipment.id, previous: shipment as unknown as Record<string, unknown>,
+        action: shipment.status === draft.status ? 'updated' : 'status-changed',
+      }, draft);
+      setEditing(false);
+    } catch (caught) {
+      setEditError((caught as Error).message);
+    } finally { setBusy(false); }
+  }
+
+  async function markAgencyPaid(paymentDate: string) {
+    if (!actor || !isAdmin || !canMarkAgencyPaid || !shipment) return;
+    setBusy(true); setEditError(null);
+    try {
+      const paid = freezeCommissionSplit({
+        ...shipment,
+        agencyPaid: true,
+        // Payment date is captured automatically from the administrator's
+        // action; there is intentionally no user-editable date field.
+        agencyPaidAt: paymentDate || today(),
+      }, data.partners);
+      await updateRecord(shipmentsCol, {
+        entity: 'shipment', label: `${shipment.loadNumber || 'Load'} · ${shipment.companyName}`,
+        actor, id: shipment.id, previous: shipment as unknown as Record<string, unknown>, action: 'updated',
+      }, paid);
+    } catch (caught) {
+      setEditError((caught as Error).message);
+    } finally { setBusy(false); }
+  }
+
+  async function markAgencyUnpaid() {
+    if (!actor || !isAdmin || !earned || !shipment) return;
+    setBusy(true); setEditError(null);
+    try {
+      const unpaid = {
+        ...shipment,
+        status: (shipment.status as string) === LEGACY_AGENCY_PAID_STATUS ? 'Customer Paid' : shipment.status,
+        agencyPaid: false,
+        agencyPaidAt: null,
+        agencyPaidDate: null,
+        commissionSplit: null,
+      };
+      await updateRecord(shipmentsCol, {
+        entity: 'shipment', label: `${shipment.loadNumber || 'Load'} · ${shipment.companyName}`,
+        actor, id: shipment.id, previous: shipment as unknown as Record<string, unknown>, action: 'updated',
+      }, unpaid);
+      setAgencyUnpayConfirm(false);
+    } catch (caught) {
+      setEditError((caught as Error).message);
+    } finally { setBusy(false); }
+  }
 
   return (
     <div className="page">
@@ -114,12 +201,19 @@ export default function ShipmentDetail() {
             · {shipment.lane || 'No lane recorded'} · {shipment.shipmentType}
           </p>
         </div>
-        {isAdmin && (
+        {(canEdit || isAdmin) && (
           <div className="page-actions">
-            <button className="btn" onClick={() => navigate('/shipments', { state: { edit: shipment.id } })}>
+            {canEdit && <button className="btn" onClick={() => setEditing(true)}>
               <Pencil size={15} />
-              Edit in list
-            </button>
+              Edit shipment
+            </button>}
+            {isAdmin && !earned && <button className="btn primary" disabled={!canMarkAgencyPaid || busy} onClick={() => { setAgencyPaymentDate(today()); setAgencyPaymentDialog(true); }} title={canMarkAgencyPaid ? 'Records the agency payment date' : agencyPaymentEligibility === 'billed' ? 'OHT loads must be Billed before agency payment can be recorded' : 'GLT loads must be Customer Paid before agency payment can be recorded'}>
+              <CheckCircle size={15} />
+              Mark agency paid
+            </button>}
+            {isAdmin && earned && <button className="btn danger" disabled={busy} onClick={() => setAgencyUnpayConfirm(true)}>
+              Mark agency unpaid
+            </button>}
           </div>
         )}
       </div>
@@ -131,6 +225,11 @@ export default function ShipmentDetail() {
           {shipment.status === 'Issue / Dispute' ? ' — except it stays in outstanding AR.' : '.'}
         </Banner>
       )}
+      {editError && <Banner tone="error">{editError}</Banner>}
+
+      {!isEmployee && <Banner tone="info">
+        {earned ? <><strong>Agency payment recorded.</strong>{shipment.agencyPaidAt ? ` Automatically recorded on ${formatDate(shipment.agencyPaidAt.slice(0, 10))}.` : ' This is a historic payment record with no stored payment date.'}</> : canMarkAgencyPaid ? <><strong>Ready for agency payment.</strong> This {agencyPaymentEligibility === 'billed' ? 'OHT' : 'GLT'} load meets its payment rule. Marking it paid records today automatically.</> : <>Agency payment is pending. {agencyPaymentEligibility === 'billed' ? 'This OHT load must be Billed before it can be marked agency paid.' : 'This GLT load must be Customer Paid before it can be marked agency paid.'}</>}
+      </Banner>}
 
       {receivable.state === 'overdue' && (
         <Banner tone="warning">
@@ -140,7 +239,7 @@ export default function ShipmentDetail() {
         </Banner>
       )}
 
-      <div className="section-title">Financials</div>
+      {!isEmployee && <><div className="section-title">Financials</div>
       <div className="tiles">
         <Tile label="AR — customer pays" value={formatCurrency(shipment.ar)} />
         <Tile label="AP — carrier paid" value={formatCurrency(shipment.ap)} />
@@ -157,15 +256,61 @@ export default function ShipmentDetail() {
           accent
         />
         <Tile
-          label={earned ? 'Commission earned' : 'Commission pending'}
-          value={formatCurrency(split.teamCommission)}
-          hint={earned ? 'Credited to partners' : 'Credits at Agency Paid'}
+          label={shipment.ownerType === 'employee' ? 'Partner pool after employee commission' : earned ? 'Commission earned' : 'Commission pending'}
+          value={formatCurrency(partnerPool)}
+          hint={shipment.ownerType === 'employee' ? 'Finalised in the monthly employee settlement' : earned ? 'Credited to partners' : 'Credits when agency payment is recorded'}
           tone={earned ? 'positive' : undefined}
         />
-      </div>
+      </div></>}
 
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', marginTop: 14 }}>
-        <Card title="Partner distribution">
+      {editing && (
+        <ShipmentForm
+          initial={shipment}
+          isEmployee={isEmployee}
+          busy={busy}
+          onCancel={() => setEditing(false)}
+          onSave={(draft) => void saveEdit(draft)}
+        />
+      )}
+
+      {agencyPaymentDialog && (
+        <Modal
+          narrow
+          title="Record agency payment"
+          onClose={() => setAgencyPaymentDialog(false)}
+          footer={<>
+            <button className="btn" onClick={() => setAgencyPaymentDialog(false)} disabled={busy}>Cancel</button>
+            <button className="btn primary" onClick={() => { setAgencyPaymentDialog(false); void markAgencyPaid(agencyPaymentDate); }} disabled={busy || !agencyPaymentDate}>{busy ? 'Saving…' : 'Mark agency paid'}</button>
+          </>}
+        >
+          <Field label="Agency payment date" help="Defaults to today. Change it when the payment was received on another date.">
+            <input type="date" value={agencyPaymentDate} onChange={(event) => setAgencyPaymentDate(event.target.value)} />
+          </Field>
+        </Modal>
+      )}
+
+      {agencyUnpayConfirm && <ConfirmDialog
+        title="Mark agency payment unpaid?"
+        message="This will reverse the agency payment, clear its payment date, and remove the frozen commission split. The shipment status will remain unchanged."
+        confirmLabel="Mark unpaid"
+        onConfirm={() => void markAgencyUnpaid()}
+        onCancel={() => setAgencyUnpayConfirm(false)}
+        busy={busy}
+      />}
+
+      {!isEmployee && <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', marginTop: 14 }}>
+        <Card title={shipment.ownerType === 'employee' ? 'Employee commission assignment' : 'Partner distribution'}>
+          {shipment.ownerType === 'employee' ? (
+            <div className="partner-rows">
+              <div><span>Employee</span><span>{employee?.name ?? 'Former employee'}</span></div>
+              <div><span>Applicable monthly tier</span><span>{employeeSettlement?.applicableTier ? `${formatCurrency(employeeSettlement.applicableTier.minBusiness)} – ${employeeSettlement.applicableTier.maxBusiness == null ? 'No maximum' : formatCurrency(employeeSettlement.applicableTier.maxBusiness)}` : 'No matching tier — maximum fallback used'}</span></div>
+              <div><span>Commission rate</span><span>{employeeSettlement?.commissionPercent ?? 0}%{employeeSettlement && !employeeSettlement.applicableTier ? ' (maximum fallback)' : ''}</span></div>
+              <div><span>Employee payout from this shipment</span><span>−{formatCurrency(employeePayout)}</span></div>
+              <div className="total"><span>Released to partner pool</span><span>{formatCurrency(partnerPool)}</span></div>
+              <p className="help" style={{ marginBottom: 0 }}>The monthly settlement selects one tier from all of this employee’s paid shipments and shows the final partner distribution.</p>
+            </div>
+          ) : (
+          <>
           {earned ? (
             <div className="partner-rows">
               {data.partners
@@ -186,7 +331,7 @@ export default function ShipmentDetail() {
           ) : (
             <>
               <p className="muted" style={{ marginTop: 0 }}>
-                Nothing is credited until this load reaches <strong>Agency Paid</strong>. It would
+                Nothing is credited until an administrator records the <strong>agency payment</strong>. It would
                 distribute as:
               </p>
               <div className="partner-rows">
@@ -204,6 +349,8 @@ export default function ShipmentDetail() {
                   ))}
               </div>
             </>
+          )}
+          </>
           )}
         </Card>
 
@@ -233,7 +380,7 @@ export default function ShipmentDetail() {
             to one load, so they appear on the dashboard rather than here.
           </p>
         </Card>
-      </div>
+      </div>}
 
       <div className="section-title">Timeline</div>
       <Card>
@@ -310,7 +457,7 @@ export default function ShipmentDetail() {
         />
       </div>
 
-      <div className="section-title">Invoicing</div>
+      {!isEmployee && <><div className="section-title">Invoicing</div>
       <div className="tiles">
         <Tile
           label="Invoice / load number"
@@ -348,7 +495,7 @@ export default function ShipmentDetail() {
                 : undefined
           }
         />
-      </div>
+      </div></>}
 
       <div className="section-title">Load details</div>
       <Card>
@@ -380,7 +527,7 @@ export default function ShipmentDetail() {
           <div>
             <span>Agency</span>
             <span>
-              {agency ? `${agency.name} (${agency.agentPercent}/${agency.agencyPercent})` : '—'}
+              {agency ? (isEmployee ? agency.name : `${agency.name} (${agency.agentPercent}/${agency.agencyPercent})`) : employee?.agencyName ?? '—'}
             </span>
           </div>
         </div>

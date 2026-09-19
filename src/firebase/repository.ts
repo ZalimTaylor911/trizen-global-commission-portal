@@ -14,6 +14,7 @@ import {
   writeBatch,
   type CollectionReference,
   type DocumentData,
+  type WriteBatch,
 } from 'firebase/firestore';
 import { auditLogCol } from './collections';
 import { db } from './config';
@@ -22,6 +23,24 @@ import type { AuditAction, AuditEntity } from '@/domain/types';
 export interface Actor {
   userId: string;
   userName: string;
+}
+
+/**
+ * Additional writes that must commit together with a newly created record.
+ * The callback receives the definitive Firestore document id before the batch
+ * is committed, which is important for child access-index records.
+ */
+export interface CreateRecordSideEffect {
+  batch: WriteBatch;
+  id: string;
+  createdAt: string;
+}
+
+/** Extra writes that must succeed or fail together with an existing record. */
+export interface RecordWriteSideEffect {
+  batch: WriteBatch;
+  id: string;
+  updatedAt?: string;
 }
 
 /** Fields that are bookkeeping noise in an audit diff rather than real changes. */
@@ -73,10 +92,17 @@ function auditPayload(params: {
 
 export async function createRecord<T extends object>(
   col: CollectionReference<T, DocumentData>,
-  options: { entity: AuditEntity; label: string; actor: Actor },
+  options: {
+    entity: AuditEntity;
+    label: string;
+    actor: Actor;
+    /** Runs inside the same batch as the record and its audit entry. */
+    onCreate?: (effect: CreateRecordSideEffect) => void;
+  },
   data: T,
 ): Promise<string> {
-  const payload = { ...data, createdAt: new Date().toISOString() };
+  const createdAt = new Date().toISOString();
+  const payload = { ...data, createdAt };
   const ref = doc(col);
   const auditRef = doc(auditLogCol);
   const batch = writeBatch(db);
@@ -90,6 +116,7 @@ export async function createRecord<T extends object>(
     previousValue: null,
     newValue: payload as Record<string, unknown>,
   }));
+  options.onCreate?.({ batch, id: ref.id, createdAt });
   await batch.commit();
 
   return ref.id;
@@ -105,6 +132,8 @@ export async function updateRecord<T extends object>(
     previous: Record<string, unknown>;
     /** Set for shipment status transitions so the log reads 'status-changed'. */
     action?: AuditAction;
+    /** Runs in the same batch as the update and audit entry. */
+    onUpdate?: (effect: RecordWriteSideEffect) => void;
   },
   changes: Partial<T>,
 ): Promise<void> {
@@ -121,6 +150,7 @@ export async function updateRecord<T extends object>(
     previousValue: before,
     newValue: after,
   }));
+  options.onUpdate?.({ batch, id: options.id, updatedAt: payload.updatedAt });
   await batch.commit();
 }
 
@@ -132,6 +162,8 @@ export async function deleteRecord<T extends object>(
     actor: Actor;
     id: string;
     previous: Record<string, unknown>;
+    /** Runs in the same batch as the deletion and audit entry. */
+    onDelete?: (effect: RecordWriteSideEffect) => void;
   },
 ): Promise<void> {
   const batch = writeBatch(db);
@@ -145,6 +177,7 @@ export async function deleteRecord<T extends object>(
     previousValue: options.previous,
     newValue: null,
   }));
+  options.onDelete?.({ batch, id: options.id });
   await batch.commit();
 }
 

@@ -1,7 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Columns3,
+  Check,
+  ChevronDown,
+  Copy,
   FileSpreadsheet,
   FileText,
   Pencil,
@@ -16,14 +19,16 @@ import { shipmentsCol } from '@/firebase/collections';
 import { createRecord, deleteRecord, updateRecord } from '@/firebase/repository';
 import {
   BILLED_STATUS,
+  LEGACY_AGENCY_PAID_STATUS,
   SHIPMENT_STATUSES,
   SHIPMENT_TYPES,
+  agencyPaymentEligibilityFor,
   paymentTermsLabel,
   type Shipment,
   type ShipmentStatus,
   type ShipmentType,
 } from '@/domain/types';
-import { computeNetMargin, freezeCommissionSplit, splitShipment } from '@/domain/engine';
+import { computeNetMargin, freezeCommissionSplit, isAgencyPaid, splitShipment } from '@/domain/engine';
 import { agenciesForCustomer } from '@/domain/customers';
 import { addDays } from '@/domain/receivables';
 import { deliveryPerformance, estimateDelivery } from '@/domain/transit';
@@ -45,7 +50,7 @@ import {
   StatusBadge,
 } from '@/components/ui';
 
-type Draft = Omit<Shipment, 'id' | 'createdAt' | 'updatedAt'>;
+export type Draft = Omit<Shipment, 'id' | 'createdAt' | 'updatedAt'>;
 
 function emptyDraft(agencyId: string): Draft {
   const date = today();
@@ -65,6 +70,14 @@ function emptyDraft(agencyId: string): Draft {
     status: 'Assigned',
     shipmentType: 'FTL',
     agencyId,
+    ownerType: 'core-team',
+    employeeId: null,
+    employeeCommissionTiers: null,
+    employeeMaxCommissionPercent: null,
+    employeeCommissionBasisPercent: null,
+    agencyPaid: false,
+    agencyPaidAt: null,
+    customerPaidAt: null,
     invoicedDate: '',
     transitDays: 0,
     actualPickupDate: '',
@@ -75,13 +88,15 @@ function emptyDraft(agencyId: string): Draft {
 }
 
 const NO_FILTERS = {
-  month: '',
-  agency: '',
-  status: '',
-  type: '',
-  customer: '',
-  carrier: '',
-  lane: '',
+  month: [] as string[],
+  agency: [] as string[],
+  status: [] as string[],
+  agencyPayment: [] as string[],
+  type: [] as string[],
+  customer: [] as string[],
+  carrier: [] as string[],
+  lane: [] as string[],
+  owner: [] as string[],
   search: '',
 };
 
@@ -93,7 +108,7 @@ function distinctValues(shipments: Shipment[], pick: (shipment: Shipment) => str
 }
 
 export default function Shipments({ openCreate = false }: { openCreate?: boolean }) {
-  const { isAdmin, actor, user } = useAuth();
+  const { isAdmin, isEmployee, employeeId, actor, user } = useAuth();
   const data = useData();
   const navigate = useNavigate();
 
@@ -106,13 +121,61 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState(NO_FILTERS);
+  const [copiedLoad, setCopiedLoad] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkPaymentDialog, setBulkPaymentDialog] = useState(false);
+  const [bulkPaymentDate, setBulkPaymentDate] = useState(today());
+  const [bulkUnpayConfirm, setBulkUnpayConfirm] = useState(false);
 
-  const set = <K extends keyof typeof NO_FILTERS>(key: K, value: string) =>
+  const set = <K extends keyof typeof NO_FILTERS>(key: K, value: (typeof NO_FILTERS)[K]) =>
     setFilters((prev) => ({ ...prev, [key]: value }));
+
+  async function copyLoadNumber(shipment: Shipment) {
+    if (!shipment.loadNumber) return;
+    try {
+      // Electron can run in a context where navigator.clipboard is unavailable.
+      // Keep the modern API first, then use the reliable desktop fallback.
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(shipment.loadNumber);
+          copied = true;
+        } catch {
+          // Fall through: Electron can expose the API but deny this context.
+        }
+      }
+      if (!copied) {
+        const input = document.createElement('textarea');
+        input.value = shipment.loadNumber;
+        input.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+        document.body.appendChild(input);
+        input.select();
+        const copied = document.execCommand('copy');
+        input.remove();
+        if (!copied) throw new Error('Copy command was rejected');
+      }
+      setCopiedLoad(shipment.id);
+      window.setTimeout(() => setCopiedLoad((id) => id === shipment.id ? null : id), 1500);
+    } catch {
+      setError('Could not copy the load number. Please copy it manually.');
+    }
+  }
 
   const agencyById = useMemo(
     () => new Map(data.agencies.map((agency) => [agency.id, agency])),
     [data.agencies],
+  );
+  // Resolve from both the persisted employee profile id and the permanent
+  // Firebase Auth UID. This gives a newly approved employee the exact profile
+  // id required by shipment rules even before an older device refreshes its
+  // users.employeeId field.
+  const currentEmployee = useMemo(
+    () => data.employees.find((employee) => employee.id === employeeId || employee.userId === user?.uid),
+    [data.employees, employeeId, user?.uid],
+  );
+  const employeeById = useMemo(
+    () => new Map(data.employees.map((employee) => [employee.id, employee])),
+    [data.employees],
   );
 
   const months = useMemo(() => distinctMonths(data.shipments), [data.shipments]);
@@ -123,13 +186,20 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
   const filtered = useMemo(() => {
     const needle = filters.search.trim().toLowerCase();
     return data.shipments.filter((shipment) => {
-      if (filters.month && shipment.month !== filters.month) return false;
-      if (filters.agency && shipment.agencyId !== filters.agency) return false;
-      if (filters.status && shipment.status !== filters.status) return false;
-      if (filters.type && shipment.shipmentType !== filters.type) return false;
-      if (filters.customer && shipment.companyName !== filters.customer) return false;
-      if (filters.carrier && shipment.carrierName !== filters.carrier) return false;
-      if (filters.lane && shipment.lane !== filters.lane) return false;
+      if (filters.month.length && !filters.month.includes(shipment.month)) return false;
+      if (filters.agency.length && !filters.agency.includes(shipment.agencyId)) return false;
+      const displayStatus = isAgencyPaid(shipment) ? 'Customer Paid' : shipment.status;
+      if (filters.status.length && !filters.status.includes(displayStatus)) return false;
+      if (filters.agencyPayment.length) {
+        const paymentState = isAgencyPaid(shipment) ? 'paid' : 'unpaid';
+        if (!filters.agencyPayment.includes(paymentState)) return false;
+      }
+      if (filters.type.length && !filters.type.includes(shipment.shipmentType)) return false;
+      if (filters.customer.length && !filters.customer.includes(shipment.companyName)) return false;
+      if (filters.carrier.length && !filters.carrier.includes(shipment.carrierName)) return false;
+      if (filters.lane.length && !filters.lane.includes(shipment.lane)) return false;
+      const owner = shipment.ownerType === 'employee' ? `employee:${shipment.employeeId ?? ''}` : 'core-team';
+      if (filters.owner.length && !filters.owner.includes(owner)) return false;
       if (!needle) return true;
       return [shipment.companyName, shipment.loadNumber, shipment.lane, shipment.carrierName, shipment.poc]
         .join(' ')
@@ -137,6 +207,23 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
         .includes(needle);
     });
   }, [data.shipments, filters]);
+
+  const selectedShipments = useMemo(
+    () => data.shipments.filter((shipment) => selectedIds.includes(shipment.id)),
+    [data.shipments, selectedIds],
+  );
+  const eligibleSelected = useMemo(
+    () => selectedShipments.filter((shipment) => {
+      if (isAgencyPaid(shipment)) return false;
+      const eligibility = agencyPaymentEligibilityFor(agencyById.get(shipment.agencyId));
+      return eligibility === 'billed' ? shipment.status === 'Billed' : shipment.status === 'Customer Paid';
+    }),
+    [agencyById, selectedShipments],
+  );
+  const paidSelected = useMemo(
+    () => selectedShipments.filter((shipment) => isAgencyPaid(shipment)),
+    [selectedShipments],
+  );
 
   /**
    * Column set for the customisable table. `value` doubles as the sort key and
@@ -154,17 +241,17 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
       {
         id: 'loadNumber',
         header: 'Invoice / Load #',
-        width: 130,
+        width: 170,
         value: (s) => s.loadNumber,
         render: (s) => (
-          <Link
-            to={`/shipments/${s.id}`}
-            className="mono"
-            onClick={(e) => e.stopPropagation()}
-            style={{ color: 'var(--primary)', textDecoration: 'none', fontWeight: 600 }}
-          >
-            {s.loadNumber || 'View'}
-          </Link>
+          <div className="shipment-load-number" onClick={(e) => e.stopPropagation()}>
+            <Link to={`/shipments/${s.id}`} className="mono" style={{ color: 'var(--primary)', textDecoration: 'none', fontWeight: 600 }}>
+              {s.loadNumber || 'View'}
+            </Link>
+            {s.loadNumber && <button className="btn ghost small" onClick={() => void copyLoadNumber(s)} aria-label={`Copy ${s.loadNumber}`} title="Copy load number">
+              {copiedLoad === s.id ? <Check size={13} /> : <Copy size={13} />}
+            </button>}
+          </div>
         ),
       },
       {
@@ -194,8 +281,8 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
       { id: 'ap', header: 'AP', width: 110, numeric: true, value: (s) => s.ap, render: (s) => formatCurrency(s.ap) },
       {
         id: 'gross',
-        header: 'Gross',
-        width: 110,
+        header: 'Gross business',
+        width: 155,
         numeric: true,
         value: (s) => s.grossMargin,
         render: (s) => formatCurrency(s.grossMargin),
@@ -204,8 +291,8 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
         id: 'agency',
         header: 'Agency',
         width: 150,
-        value: (s) => agencyById.get(s.agencyId)?.name ?? '',
-        render: (s) => agencyById.get(s.agencyId)?.name ?? <span className="muted">Unknown</span>,
+        value: (s) => agencyById.get(s.agencyId)?.name ?? employeeById.get(s.employeeId ?? '')?.agencyName ?? '',
+        render: (s) => agencyById.get(s.agencyId)?.name ?? employeeById.get(s.employeeId ?? '')?.agencyName ?? <span className="muted">Unknown</span>,
       },
       {
         id: 'net',
@@ -216,11 +303,34 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
         render: (s) => formatCurrency(s.netMargin),
       },
       {
+        id: 'owner',
+        header: 'Owner',
+        width: 150,
+        value: (s) => s.ownerType === 'employee'
+          ? (employeeById.get(s.employeeId ?? '')?.name ?? 'Former employee')
+          : 'Core Team',
+        render: (s) => s.ownerType === 'employee'
+          ? <span className="badge warn">{employeeById.get(s.employeeId ?? '')?.name ?? 'Former employee'}</span>
+          : <span className="badge neutral">Core Team</span>,
+      },
+      {
         id: 'status',
         header: 'Status',
-        width: 130,
-        value: (s) => s.status,
-        render: (s) => <StatusBadge status={s.status} />,
+        width: 155,
+        value: (s) => isAgencyPaid(s) ? 'Customer Paid' : s.status,
+        render: (s) => <StatusBadge status={isAgencyPaid(s) ? 'Customer Paid' : s.status} />,
+      },
+      {
+        id: 'agencyPayment',
+        header: 'Agency payment',
+        width: 235,
+        value: (s) => isAgencyPaid(s) ? 'Agency paid' : 'Awaiting agency payment',
+        render: (s) => {
+          if (isAgencyPaid(s)) return <span className="badge success">Agency paid</span>;
+          const eligibility = agencyPaymentEligibilityFor(agencyById.get(s.agencyId));
+          const ready = eligibility === 'billed' ? s.status === 'Billed' : s.status === 'Customer Paid';
+          return <span className={ready ? 'badge warn' : 'badge neutral'}>{ready ? 'Ready to mark paid' : eligibility === 'billed' ? 'Awaiting billing' : 'Awaiting customer payment'}</span>;
+        },
       },
       // Available but off until someone turns them on — nineteen columns at once
       // is unreadable, and these matter to fewer people day to day.
@@ -295,8 +405,24 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
       });
     }
 
+    if (isEmployee) {
+      list.splice(3, 0, {
+        id: 'employeeNetBusiness',
+        header: 'Net business',
+        width: 150,
+        numeric: true,
+        value: (s) => round2(s.grossMargin * ((employeeById.get(s.employeeId ?? '')?.agencyBasisPercent ?? s.employeeCommissionBasisPercent ?? 0) / 100)),
+        render: (s) => formatCurrency(round2(s.grossMargin * ((employeeById.get(s.employeeId ?? '')?.agencyBasisPercent ?? s.employeeCommissionBasisPercent ?? 0) / 100))),
+      });
+    }
+
+    if (isEmployee) {
+      // Employees may see operational business figures, but never the
+      // internal net margin/owner split used by the core team.
+      return list.filter((column) => !['net', 'owner'].includes(column.id));
+    }
     return list;
-  }, [agencyById, isAdmin]);
+  }, [agencyById, employeeById, isAdmin, isEmployee]);
 
   const table = useTablePrefs('shipments', user?.uid ?? '', columns);
 
@@ -328,8 +454,8 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
       const draft = freezeCommissionSplit(incoming, data.partners);
       const label = `${draft.loadNumber || 'Load'} · ${draft.companyName}`;
       if (editing) {
-        // A move into or out of 'Agency Paid' changes the money, so the audit
-        // log records it as a status change rather than a generic edit.
+        // Operational status changes are recorded separately from agency-payment
+        // events, which have their own admin-only action.
         const statusChanged = editing.status !== draft.status;
         await updateRecord(
           shipmentsCol,
@@ -374,6 +500,67 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
     }
   }
 
+  async function markSelectedAgencyPaid() {
+    if (!actor || !isAdmin || eligibleSelected.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await Promise.all(eligibleSelected.map((shipment) => {
+        const paid = freezeCommissionSplit({
+          ...shipment,
+          agencyPaid: true,
+          agencyPaidAt: bulkPaymentDate || today(),
+        }, data.partners);
+        return updateRecord(shipmentsCol, {
+          entity: 'shipment',
+          label: `${shipment.loadNumber || 'Load'} · ${shipment.companyName}`,
+          actor,
+          id: shipment.id,
+          previous: shipment as unknown as Record<string, unknown>,
+          action: 'updated',
+        }, paid);
+      }));
+      setSelectedIds([]);
+      setBulkPaymentDialog(false);
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markSelectedAgencyUnpaid() {
+    if (!actor || !isAdmin || paidSelected.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await Promise.all(paidSelected.map((shipment) => {
+        const unpaid = {
+          ...shipment,
+          status: (shipment.status as string) === LEGACY_AGENCY_PAID_STATUS ? 'Customer Paid' : shipment.status,
+          agencyPaid: false,
+          agencyPaidAt: null,
+          agencyPaidDate: null,
+          commissionSplit: null,
+        };
+        return updateRecord(shipmentsCol, {
+          entity: 'shipment',
+          label: `${shipment.loadNumber || 'Load'} · ${shipment.companyName}`,
+          actor,
+          id: shipment.id,
+          previous: shipment as unknown as Record<string, unknown>,
+          action: 'updated',
+        }, unpaid);
+      }));
+      setSelectedIds([]);
+      setBulkUnpayConfirm(false);
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const sortedRows = useMemo(() => table.sortRows(filtered), [table, filtered]);
 
   /** Exports exactly the columns on screen, in their current order. SPEC.md §24. */
@@ -410,7 +597,7 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
 
   if (data.loading) return <Spinner label="Loading shipments…" />;
 
-  const activeFilters = Object.values(filters).filter(Boolean).length;
+  const activeFilters = Object.values(filters).filter((value) => Array.isArray(value) ? value.length > 0 : Boolean(value)).length;
 
   return (
     <div className="page">
@@ -418,8 +605,7 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
         <div>
           <h1>Shipments</h1>
           <p>
-            {filtered.length} of {data.shipments.length} loads. Commission is only earned at{' '}
-            <strong>Agency Paid</strong>.
+            {filtered.length} of {data.shipments.length} loads. Commission is earned only after an admin records the agency payment.
           </p>
         </div>
         <div className="page-actions">
@@ -443,16 +629,16 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
             <FileText size={15} />
             {exporting === 'pdf' ? 'Exporting…' : 'PDF'}
           </button>
-          {isAdmin && (
+          {(isAdmin || isEmployee) && (
             <>
-              <button className="btn" onClick={() => setImporting(true)}>
+              {isAdmin && <button className="btn" onClick={() => setImporting(true)}>
                 <Upload size={15} />
                 Import
-              </button>
+              </button>}
               <button
                 className="btn primary"
                 onClick={() => setCreating(true)}
-                disabled={data.agencies.length === 0}
+                disabled={isEmployee ? !currentEmployee?.agencyId : data.agencies.length === 0}
               >
                 <Plus size={15} />
                 New shipment
@@ -471,76 +657,18 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
 
       <Card>
         <div className="filters">
-          <Field label="Month">
-            <select value={filters.month} onChange={(e) => set('month', e.target.value)}>
-              <option value="">All months</option>
-              {months.map((month) => (
-                <option key={month} value={month}>
-                  {monthLabel(month)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Agency">
-            <select value={filters.agency} onChange={(e) => set('agency', e.target.value)}>
-              <option value="">All agencies</option>
-              {data.agencies.map((agency) => (
-                <option key={agency.id} value={agency.id}>
-                  {agency.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Status">
-            <select value={filters.status} onChange={(e) => set('status', e.target.value)}>
-              <option value="">All statuses</option>
-              {SHIPMENT_STATUSES.map((status) => (
-                <option key={status} value={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Type">
-            <select value={filters.type} onChange={(e) => set('type', e.target.value)}>
-              <option value="">LTL and FTL</option>
-              {SHIPMENT_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Customer">
-            <select value={filters.customer} onChange={(e) => set('customer', e.target.value)}>
-              <option value="">All customers</option>
-              {customers.map((customer) => (
-                <option key={customer} value={customer}>
-                  {customer}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Carrier">
-            <select value={filters.carrier} onChange={(e) => set('carrier', e.target.value)}>
-              <option value="">All carriers</option>
-              {carriers.map((carrier) => (
-                <option key={carrier} value={carrier}>
-                  {carrier}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Lane">
-            <select value={filters.lane} onChange={(e) => set('lane', e.target.value)}>
-              <option value="">All lanes</option>
-              {lanes.map((lane) => (
-                <option key={lane} value={lane}>
-                  {lane}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <MultiFilter label="Month" selected={filters.month} onChange={(value) => set('month', value)} options={months.map((value) => ({ value, label: monthLabel(value) }))} />
+          {!isEmployee && <MultiFilter label="Agency" selected={filters.agency} onChange={(value) => set('agency', value)} options={data.agencies.map((row) => ({ value: row.id, label: row.name }))} />}
+          <MultiFilter label="Status" selected={filters.status} onChange={(value) => set('status', value)} options={(isEmployee ? ['Assigned', 'In Transit', 'Delivered'] : SHIPMENT_STATUSES).map((value) => ({ value, label: value }))} />
+          {!isEmployee && <MultiFilter label="Agency payment" selected={filters.agencyPayment} onChange={(value) => set('agencyPayment', value)} options={[{ value: 'paid', label: 'Agency paid' }, { value: 'unpaid', label: 'Awaiting agency payment' }]} />}
+          <MultiFilter label="Type" selected={filters.type} onChange={(value) => set('type', value)} options={SHIPMENT_TYPES.map((value) => ({ value, label: value }))} />
+          <MultiFilter label="Customer" selected={filters.customer} onChange={(value) => set('customer', value)} options={customers.map((value) => ({ value, label: value }))} />
+          <MultiFilter label="Carrier" selected={filters.carrier} onChange={(value) => set('carrier', value)} options={carriers.map((value) => ({ value, label: value }))} />
+          <MultiFilter label="Lane" selected={filters.lane} onChange={(value) => set('lane', value)} options={lanes.map((value) => ({ value, label: value }))} />
+          {!isEmployee && <MultiFilter label="Shipment owner" selected={filters.owner} onChange={(value) => set('owner', value)} options={[
+            { value: 'core-team', label: 'Core Team' },
+            ...data.employees.map((employee) => ({ value: `employee:${employee.id}`, label: employee.name })),
+          ]} />}
           <Field label="Search">
             <input
               placeholder="Company, load #, POC…"
@@ -558,11 +686,34 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
       <div style={{ height: 14 }} />
 
       <Card flush>
+        {isAdmin && selectedIds.length > 0 && <div className="bulk-action-bar">
+          <strong>{selectedIds.length} shipment{selectedIds.length === 1 ? '' : 's'} selected</strong>
+          <span className="muted">{eligibleSelected.length} ready to mark paid · {paidSelected.length} already paid</span>
+          <div className="page-actions">
+            <button className="btn primary" disabled={eligibleSelected.length === 0 || busy} onClick={() => { setBulkPaymentDate(today()); setBulkPaymentDialog(true); }}>
+              Mark selected paid
+            </button>
+            <button className="btn danger" disabled={paidSelected.length === 0 || busy} onClick={() => setBulkUnpayConfirm(true)}>
+              Mark selected unpaid
+            </button>
+            <button className="btn" disabled={busy} onClick={() => setSelectedIds([])}>Clear</button>
+          </div>
+        </div>}
         <DataTable
           table={table}
           rows={sortedRows}
           rowKey={(shipment) => shipment.id}
           onRowClick={(shipment) => navigate(`/shipments/${shipment.id}`)}
+          selectable={isAdmin}
+          selectedIds={selectedIds}
+          rowId={(shipment) => shipment.id}
+          onToggleRow={(shipment) => setSelectedIds((ids) => ids.includes(shipment.id) ? ids.filter((id) => id !== shipment.id) : [...ids, shipment.id])}
+          onToggleAll={() => {
+            const visibleIds = sortedRows.map((shipment) => shipment.id);
+            setSelectedIds((ids) => visibleIds.every((id) => ids.includes(id))
+              ? ids.filter((id) => !visibleIds.includes(id))
+              : [...new Set([...ids, ...visibleIds])]);
+          }}
           emptyTitle={data.shipments.length === 0 ? 'No shipments yet' : 'No matches'}
           emptyMessage={
             data.shipments.length === 0
@@ -570,7 +721,7 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
               : 'Try clearing a filter.'
           }
           footer={
-            filtered.length > 0 ? (
+            filtered.length > 0 && !isEmployee ? (
               <tfoot>
                 <tr>
                   <td colSpan={Math.max(1, table.visibleColumns.length)}>
@@ -589,8 +740,14 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
 
       {(creating || editing) && (
         <ShipmentForm
-          initial={editing ?? emptyDraft(data.agencies[0]?.id ?? '')}
-          isAdmin={isAdmin}
+          initial={editing ?? (isEmployee
+            ? {
+                ...emptyDraft(currentEmployee?.agencyId ?? ''),
+                ownerType: 'employee',
+                employeeId: currentEmployee?.id ?? employeeId ?? null,
+              }
+            : emptyDraft(data.agencies[0]?.id ?? ''))}
+          isEmployee={isEmployee}
           busy={busy}
           onCancel={() => {
             setCreating(false);
@@ -601,6 +758,32 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
       )}
 
       {importing && <BulkImport onClose={() => setImporting(false)} />}
+
+      {bulkPaymentDialog && <Modal
+        narrow
+        title="Record agency payments"
+        onClose={() => setBulkPaymentDialog(false)}
+        footer={<>
+          <button className="btn" onClick={() => setBulkPaymentDialog(false)} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={() => void markSelectedAgencyPaid()} disabled={busy || !bulkPaymentDate}>
+            {busy ? 'Saving…' : `Mark ${eligibleSelected.length} paid`}
+          </button>
+        </>}
+      >
+        <Field label="Agency payment date" help="Defaults to today. This date will be applied to every eligible selected shipment.">
+          <input type="date" value={bulkPaymentDate} onChange={(event) => setBulkPaymentDate(event.target.value)} />
+        </Field>
+        {eligibleSelected.length < selectedShipments.length && <p className="help">Only shipments that meet their agency's payment rule will be updated. Other selected shipments will be skipped.</p>}
+      </Modal>}
+
+      {bulkUnpayConfirm && <ConfirmDialog
+        title="Mark agency payments unpaid?"
+        message={`This will reverse agency payment for ${paidSelected.length} selected shipment${paidSelected.length === 1 ? '' : 's'} and remove their frozen commission split. Their shipment status will remain unchanged.`}
+        confirmLabel="Mark unpaid"
+        onConfirm={() => void markSelectedAgencyUnpaid()}
+        onCancel={() => setBulkUnpayConfirm(false)}
+        busy={busy}
+      />}
 
       {deleting && (
         <ConfirmDialog
@@ -617,26 +800,72 @@ export default function Shipments({ openCreate = false }: { openCreate?: boolean
   );
 }
 
-function ShipmentForm({
+function MultiFilter({
+  label, options, selected, onChange,
+}: {
+  label: string;
+  options: { value: string; label: string }[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+  const toggle = (value: string) => onChange(
+    selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value],
+  );
+  return <div className="multi-filter" ref={containerRef}>
+    <span className="multi-filter-label">{label}</span>
+    <button type="button" className="multi-filter-trigger" onClick={() => setOpen((value) => !value)}>
+      <span>{selected.length === 0 ? `All ${label.toLowerCase()}s` : `${selected.length} selected`}</span>
+      <ChevronDown size={15} />
+    </button>
+    {open && <div className="multi-filter-menu">
+      <div className="multi-filter-menu-head"><span>{label}</span>{selected.length > 0 && <button type="button" onClick={() => onChange([])}>Clear</button>}</div>
+      {options.length === 0 ? <span className="muted">No options</span> : options.map((option) => <label key={option.value} className="multi-filter-option">
+        <input type="checkbox" checked={selected.includes(option.value)} onChange={() => toggle(option.value)} />
+        <span>{option.label}</span>
+      </label>)}
+    </div>}
+  </div>;
+}
+
+export function ShipmentForm({
   initial,
-  isAdmin,
+  isEmployee,
   busy,
   onCancel,
   onSave,
 }: {
   initial: Draft | Shipment;
-  isAdmin: boolean;
+  isEmployee: boolean;
   busy: boolean;
   onCancel: () => void;
   onSave: (draft: Draft) => void;
 }) {
   const data = useData();
   const [draft, setDraft] = useState<Draft>({ ...(initial as Draft) });
+  const isNew = !('id' in initial);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
 
   const agency = data.agencies.find((a) => a.id === draft.agencyId);
+  const employee = data.employees.find((row) => row.id === draft.employeeId);
   const customer = data.customers.find((row) => row.id === draft.customerId);
 
   // A customer's assignment decides which brokerages this load may run under.
@@ -671,7 +900,7 @@ function ShipmentForm({
   const preview = useMemo(
     () =>
       splitShipment(
-        { ...draft, id: 'preview', netMargin, status: 'Agency Paid' } as Shipment,
+        { ...draft, id: 'preview', netMargin, agencyPaid: true } as Shipment,
         data.partners,
       ),
     [draft, netMargin, data.partners],
@@ -682,7 +911,26 @@ function ShipmentForm({
     (draft.ar !== 0 || draft.ap !== 0) && Math.abs(impliedGross - draft.grossMargin) > 0.005;
 
   function submit() {
-    onSave({ ...draft, month: monthOf(draft.date), netMargin });
+    onSave({
+      ...draft,
+      month: monthOf(draft.date),
+      netMargin,
+      customerPaidAt: draft.status === 'Customer Paid' ? (draft.customerPaidAt || today()) : (draft.customerPaidAt ?? null),
+      // Freeze employee terms on the shipment so later admin changes do not
+      // alter a settlement that has already been assigned.
+      employeeCommissionTiers: draft.ownerType === 'employee'
+        ? (draft.employeeCommissionTiers ?? employee?.commissionTiers ?? [])
+        : null,
+      employeeMaxCommissionPercent: draft.ownerType === 'employee'
+        ? (draft.employeeMaxCommissionPercent ?? employee?.maxCommissionPercent ?? 0)
+        : null,
+      // This is intentionally captured per load: a later change to the
+      // employee-facing split cannot rewrite an already agreed settlement.
+      employeeCommissionBasisPercent: draft.ownerType === 'employee'
+        ? (draft.employeeCommissionBasisPercent ?? employee?.agencyBasisPercent ?? agency?.employeeCommissionBasisPercent ?? agency?.agentPercent ?? null)
+        : null,
+      employeeId: draft.ownerType === 'employee' ? draft.employeeId : null,
+    });
   }
 
   // A load can't be Billed without saying when it was billed — the receivable's
@@ -690,7 +938,38 @@ function ShipmentForm({
   const needsInvoiceDate = draft.status === BILLED_STATUS && !draft.invoicedDate;
 
   const valid =
-    draft.companyName.trim().length > 0 && draft.agencyId.length > 0 && !needsInvoiceDate;
+    draft.companyName.trim().length > 0 && draft.agencyId.length > 0 && !needsInvoiceDate
+    && (draft.ownerType !== 'employee' || (Boolean(draft.employeeId) && Boolean(draft.customerId)));
+
+  // After an employee creates a shipment, only the delivery confirmation is
+  // theirs to submit. Billing, customer payment and agency payment are finance
+  // decisions and remain admin-only.
+  if (isEmployee && !isNew) {
+    const canMarkDelivered = draft.status === 'Assigned' || draft.status === 'In Transit';
+    const submitDelivery = () => onSave({
+      ...draft,
+      status: 'Delivered',
+      actualDeliveryDate: draft.actualDeliveryDate || today(),
+    });
+    return <Modal
+      narrow
+      title="Update delivery"
+      onClose={onCancel}
+      footer={<><button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>{canMarkDelivered && <button className="btn primary" onClick={submitDelivery} disabled={busy}>{busy ? 'Saving…' : 'Mark delivered'}</button>}</>}
+    >
+      <div className="partner-rows">
+        <div><span>Load</span><strong>{draft.loadNumber || '—'}</strong></div>
+        <div><span>Customer</span><strong>{draft.companyName || '—'}</strong></div>
+        <div><span>Current status</span><strong>{draft.status}</strong></div>
+      </div>
+      {canMarkDelivered ? <>
+        <Field label="Actual delivery date">
+          <input type="date" value={draft.actualDeliveryDate} onChange={(e) => set('actualDeliveryDate', e.target.value)} />
+        </Field>
+        <p className="help">Submitting this marks the shipment Delivered. Billing, customer payment and agency payment are completed by an administrator.</p>
+      </> : <Banner tone="info">This shipment is already delivered or has progressed beyond delivery. Only an administrator can make further changes.</Banner>}
+    </Modal>;
+  }
 
   return (
     <Modal
@@ -752,7 +1031,7 @@ function ShipmentForm({
               const picked = data.customers.find((row) => row.id === e.target.value);
               setDraft((prev) => {
                 const allowed = agenciesForCustomer(picked, data.agencies);
-                const keepAgency = allowed.some((agency) => agency.id === prev.agencyId);
+                const keepAgency = isEmployee || allowed.some((agency) => agency.id === prev.agencyId);
                 return {
                   ...prev,
                   customerId: e.target.value,
@@ -820,7 +1099,7 @@ function ShipmentForm({
             }}
           />
         </Field>
-        <Field label="Gross margin" help="AR − AP. The whole margin, before the agency's cut.">
+        <Field label="Gross business" help="AR − AP. The whole business margin before any agency split.">
           <input
             type="number"
             step="0.01"
@@ -830,7 +1109,13 @@ function ShipmentForm({
         </Field>
       </div>
 
-      {grossMismatch && (
+      {isEmployee && isNew && (
+        <Banner tone="info">
+          New employee shipments start as <strong>Assigned</strong>. After saving, you can mark your own load Delivered; all later statuses are set by an administrator.
+        </Banner>
+      )}
+
+      {!isEmployee && grossMismatch && (
         <Banner tone="info">
           <span>
             Gross margin doesn't match AR − AP ({formatCurrency(impliedGross)}).{' '}
@@ -841,7 +1126,13 @@ function ShipmentForm({
         </Banner>
       )}
 
-      <div className="field-row">
+      {isEmployee && (
+        <Banner tone="info">
+          Employee net business: {formatCurrency(round2(draft.grossMargin * ((employee?.agencyBasisPercent ?? draft.employeeCommissionBasisPercent ?? 0) / 100)))}
+        </Banner>
+      )}
+
+      {!isEmployee && <div className="field-row">
         <Field
           label="Agency"
           help={
@@ -850,7 +1141,17 @@ function ShipmentForm({
               : undefined
           }
         >
-          <select value={draft.agencyId} onChange={(e) => set('agencyId', e.target.value)}>
+          <select value={draft.agencyId} onChange={(e) => {
+            const agencyId = e.target.value;
+            const picked = data.agencies.find((row) => row.id === agencyId);
+            setDraft((prev) => ({
+              ...prev,
+              agencyId,
+              employeeCommissionBasisPercent: prev.ownerType === 'employee'
+                ? (picked?.employeeCommissionBasisPercent ?? picked?.agentPercent ?? null)
+                : prev.employeeCommissionBasisPercent,
+            }));
+          }}>
             <option value="">Select an agency…</option>
             {allowedAgencies.map((a) => (
               <option key={a.id} value={a.id}>
@@ -875,6 +1176,10 @@ function ShipmentForm({
               setDraft((prev) => ({
                 ...prev,
                 status,
+                customerPaidAt:
+                  status === 'Customer Paid' && prev.status !== 'Customer Paid'
+                    ? today()
+                    : prev.customerPaidAt,
                 // Completed hands the load to accounting and Billed means they
                 // have raised the invoice — either way the payment clock starts,
                 // so stamp the date if it isn't already set.
@@ -885,14 +1190,56 @@ function ShipmentForm({
               }));
             }}
           >
-            {SHIPMENT_STATUSES.filter((status) => isAdmin || status !== 'Agency Paid').map((status) => (
+            {SHIPMENT_STATUSES.map((status) => (
               <option key={status} value={status}>
                 {status}
               </option>
             ))}
           </select>
         </Field>
-      </div>
+        <Field label="Shipment owner">
+          <select
+            value={draft.ownerType ?? 'core-team'}
+            onChange={(e) => {
+              const ownerType = e.target.value as 'core-team' | 'employee';
+              setDraft((prev) => ({
+                ...prev,
+                ownerType,
+                employeeId: ownerType === 'employee' ? prev.employeeId : null,
+                employeeCommissionTiers: ownerType === 'employee' ? prev.employeeCommissionTiers : null,
+                employeeMaxCommissionPercent: ownerType === 'employee' ? prev.employeeMaxCommissionPercent : null,
+                employeeCommissionBasisPercent: ownerType === 'employee' ? prev.employeeCommissionBasisPercent : null,
+              }));
+            }}
+          >
+            <option value="core-team">Core Team Shipment</option>
+            <option value="employee">Employee Shipment</option>
+          </select>
+        </Field>
+      </div>}
+
+      {!isEmployee && draft.ownerType === 'employee' && (
+        <Field label="Commission employee" help="The current commission rate and monthly cap are captured with this shipment.">
+          <select
+            value={draft.employeeId ?? ''}
+            onChange={(e) => {
+              const picked = data.employees.find((row) => row.id === e.target.value);
+              setDraft((prev) => ({
+                ...prev,
+                employeeId: e.target.value || null,
+                employeeCommissionTiers: picked?.commissionTiers ?? null,
+                employeeMaxCommissionPercent: picked?.maxCommissionPercent ?? null,
+                employeeCommissionBasisPercent: agency?.employeeCommissionBasisPercent ?? agency?.agentPercent ?? null,
+              }));
+            }}
+          >
+            <option value="">Select an employee…</option>
+            {data.employees.filter((row) => row.active || row.id === draft.employeeId).map((row) => (
+              <option key={row.id} value={row.id}>{row.name}{row.active ? '' : ' — disabled'}</option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       {draft.status === 'Completed' && (
         <Banner tone="info">
@@ -908,11 +1255,21 @@ function ShipmentForm({
             ? 'Marked Billed — record the date the customer was invoiced before saving.'
             : `Marked Billed — invoiced to the customer on ${formatDate(draft.invoicedDate)}${
                 dueDate ? `, due ${formatDate(dueDate)}` : ''
-              }. Commission is still only earned at Agency Paid.`}
+              }. Commission is still pending until an administrator records the agency payment.`}
         </Banner>
       )}
 
-      <Field
+      {draft.status === 'Customer Paid' && !isEmployee && (
+        <Field label="Customer payment date" help="Defaults to today. Change it when the customer payment was received on another date.">
+          <input
+            type="date"
+            value={draft.customerPaidAt || today()}
+            onChange={(e) => set('customerPaidAt', e.target.value)}
+          />
+        </Field>
+      )}
+
+      {!isEmployee && <Field
         label={draft.status === BILLED_STATUS ? 'Invoice date — required' : 'Invoice date'}
         help={
           dueDate
@@ -928,7 +1285,7 @@ function ShipmentForm({
           required={draft.status === BILLED_STATUS}
           onChange={(e) => set('invoicedDate', e.target.value)}
         />
-      </Field>
+      </Field>}
 
       <Card title="Transit">
         <div className="field-row">
@@ -1013,7 +1370,7 @@ function ShipmentForm({
       </Field>
 
       {agency && draft.grossMargin !== 0 && (
-        <Card title={draft.status === 'Agency Paid' ? 'Commission' : 'Commission once Agency Paid'}>
+        <Card title={draft.agencyPaid ? 'Commission' : 'Commission after agency payment'}>
           <div className="partner-rows">
             <div>
               <span>Gross margin</span>
@@ -1029,7 +1386,13 @@ function ShipmentForm({
               <span>Net margin — our share ({agency.agentPercent}%)</span>
               <span>{formatCurrency(netMargin)}</span>
             </div>
-            {data.partners
+            {draft.ownerType === 'employee' && (
+              <div>
+                <span>{employee?.name ?? 'Employee'} commission basis</span>
+                <span>{draft.employeeCommissionBasisPercent ?? agency.agentPercent}% of gross margin; final monthly tier applies</span>
+              </div>
+            )}
+            {draft.ownerType !== 'employee' && data.partners
               .filter((partner) => partner.active)
               .map((partner) => (
                 <div key={partner.id}>
@@ -1040,9 +1403,9 @@ function ShipmentForm({
                 </div>
               ))}
           </div>
-          {draft.status !== 'Agency Paid' && (
+          {!draft.agencyPaid && (
             <p className="help" style={{ marginTop: 12, marginBottom: 0 }}>
-              Nothing is credited to anyone until this shipment is marked Agency Paid.
+              Nothing is credited to anyone until an administrator marks the agency payment received.
             </p>
           )}
         </Card>

@@ -54,7 +54,7 @@ const DEFAULTS: Row = {
   AP: '2300',
   'Gross Margin': '700',
   Agency: 'GLT Logistics',
-  Status: 'Agency Paid',
+  Status: 'Customer Paid',
 };
 
 /** Builds a template-shaped CSV, so a column reorder can't silently break these. */

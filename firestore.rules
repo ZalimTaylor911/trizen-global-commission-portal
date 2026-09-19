@@ -38,7 +38,64 @@ service cloud.firestore {
     /** Signed in and linked to a partner record — i.e. a real member of the team. */
     function isStaff() {
       return signedIn()
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        // Self-registered Google accounts remain locked until an admin
+        // configures their employee profile and approves the login.
+        && (!('status' in userDoc()) || userDoc().status == 'approved');
+    }
+
+    function isEmployee() {
+      // The role is enough to apply employee restrictions.  A missing/stale
+      // employeeId must not turn a second device into a different security
+      // path; customer access can still be proven with the permanent Auth UID.
+      return isStaff() && userDoc().role == 'employee';
+    }
+
+    function ownEmployee(employeeId) {
+      // Prefer the users-document link, but also verify the employee profile
+      // itself. The latter keeps an approved employee operational while a
+      // legacy/stale users.employeeId is being repaired on another device.
+      return isEmployee() && employeeId is string
+        && ((userDoc().employeeId is string && userDoc().employeeId == employeeId)
+          || (exists(/databases/$(database)/documents/employees/$(employeeId))
+            && get(/databases/$(database)/documents/employees/$(employeeId)).data.userId == request.auth.uid));
+    }
+
+    function hasEmployeeCustomerAccess(customerId) {
+      // Customer access is represented by the same per-login index used by
+      // the employee CRM. It is a stable query-free proof of assignment for
+      // creating and progressing an employee's own shipment.
+      return isEmployee() && customerId is string && customerId.size() > 0
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/customerAccess/$(customerId));
+    }
+
+    function isAssignedCustomer(customer) {
+      return isEmployee()
+        && ((customer.assignedEmployeeUserIds is list
+          && customer.assignedEmployeeUserIds.hasAny([request.auth.uid]))
+          || (customer.assignedEmployeeIds is list
+            && (customer.assignedEmployeeIds.hasAny([request.auth.uid])
+              || (userDoc().employeeId is string
+                && customer.assignedEmployeeIds.hasAny([userDoc().employeeId]))))
+          || (customer.assignedEmployeeEmails is list
+            && request.auth.token.email is string
+            && customer.assignedEmployeeEmails.hasAny([request.auth.token.email])));
+    }
+
+    /**
+     * A linked employee profile may repair a stale users.employeeId on a new
+     * device, but only to a profile that already points back to that same Auth
+     * UID.  This cannot be used to grant access to another employee.
+     */
+    function isOwnEmployeeLinkUpdate(userId) {
+      return signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employeeId'])
+        && request.resource.data.role == 'employee'
+        && request.resource.data.employeeId is string
+        && (get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.userId == request.auth.uid
+          || get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.email == userDoc().email
+          || get(/databases/$(database)/documents/employees/$(request.resource.data.employeeId)).data.email == request.auth.token.email);
     }
 
     /** A member may change only the profile fields the app exposes to them. */
@@ -71,8 +128,8 @@ service cloud.firestore {
         && request.resource.data.timestamp == request.time
         && request.resource.data.action in ['created', 'updated', 'deleted', 'status-changed', 'signed-in']
         && request.resource.data.entity in [
-          'shipment', 'agency', 'partner', 'customer', 'expense',
-          'expense-category', 'withdrawal', 'session'
+          'shipment', 'agency', 'partner', 'employee', 'customer', 'expense',
+          'expense-category', 'withdrawal', 'employee-settlement', 'session', 'user'
         ]
         && request.resource.data.entityId is string
         && request.resource.data.entityLabel is string
@@ -90,14 +147,41 @@ service cloud.firestore {
     // can change either field, and only an admin can create or delete a record.
     match /users/{userId} {
       allow read: if isAdmin() || (signedIn() && request.auth.uid == userId);
-      allow create, delete: if isAdmin();
-      allow update: if isAdmin() || isOwnProfileUpdate(userId);
+      allow create: if isAdmin()
+        || (signedIn() && request.auth.uid == userId
+          && request.resource.data.role == 'employee'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.employeeId == request.auth.uid
+          && request.resource.data.partnerId == '');
+      allow delete: if isAdmin();
+      allow update: if isAdmin() || isOwnProfileUpdate(userId) || isOwnEmployeeLinkUpdate(userId);
+
+      // This index is intentionally below the employee's own user document.
+      // It contains only a customer id and lets the app list the employee's
+      // assigned IDs without running a collection query that Firestore cannot
+      // prove is safe from customer-row data alone. The customer itself is
+      // still protected by isAssignedCustomer on its direct read.
+      match /customerAccess/{customerId} {
+        allow read: if isAdmin() || (isEmployee() && request.auth.uid == userId);
+        allow create, update: if isAdmin() || (
+          isEmployee()
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly(['customerId', 'createdAt'])
+          && request.resource.data.customerId == customerId
+          // getAfter makes the customer and its access entry safely writable
+          // in one atomic batch. For an existing customer it resolves to the
+          // same document as get(), while for a brand-new customer it sees the
+          // just-created assigned document in that batch.
+          && isAssignedCustomer(getAfter(/databases/$(database)/documents/customers/$(customerId)).data)
+        );
+        allow delete: if isAdmin();
+      }
     }
 
     // --- App settings ------------------------------------------------------
     // Everyone reads them (they shape defaults across the app); admins write.
     match /settings/{docId} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isEmployee();
       allow write: if isAdmin();
     }
 
@@ -105,12 +189,37 @@ service cloud.firestore {
     // Partner shares and agency splits decide who gets paid what, so they are
     // admin-only to change. Everyone reads them to make sense of the figures.
     match /agencies/{docId} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isEmployee();
       allow write: if isAdmin();
     }
 
     match /partners/{docId} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isEmployee();
+      allow write: if isAdmin();
+    }
+
+    // Commission employees are maintained by admins only. This is a compact
+    // commission register, not employee or payroll data.
+    match /employees/{docId} {
+      allow read: if isAdmin() || (isEmployee()
+        && ((userDoc().employeeId is string
+          && resource.__name__ == /databases/$(database)/documents/employees/$(userDoc().employeeId))
+          || resource.data.userId == request.auth.uid
+          || resource.data.email == userDoc().email
+          || resource.data.email == request.auth.token.email));
+      allow create: if isAdmin()
+        || (signedIn() && request.auth.uid == docId
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && userDoc().status == 'pending'
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.registrationStatus == 'pending');
+      allow update, delete: if isAdmin();
+    }
+
+    // A settlement is the approval trail for employee payroll. Only admins can
+    // generate it or mark it paid, because payment creates a partner deduction.
+    match /employeeSettlements/{docId} {
+      allow read: if isAdmin() || ownEmployee(resource.data.employeeId);
       allow write: if isAdmin();
     }
 
@@ -118,38 +227,60 @@ service cloud.firestore {
     // Normal users run the customer book, including payment terms. Only an
     // admin may delete a customer, since that would orphan its shipments.
     match /customers/{docId} {
-      allow read: if isStaff();
-      allow create, update: if isStaff();
+      allow read: if isAdmin() || (!isEmployee() && isStaff())
+        || isAssignedCustomer(resource.data);
+      allow create: if isStaff() && !isEmployee()
+        || (isAssignedCustomer(request.resource.data)
+          && request.resource.data.assignedEmployeeUserIds is list
+          && request.resource.data.assignedEmployeeUserIds.hasAny([request.auth.uid]));
+      allow update: if isStaff() && !isEmployee();
       allow delete: if isAdmin();
     }
 
     // --- Operations --------------------------------------------------------
-    // Shipments and expenses are day-to-day work: any staff member may add and
-    // edit them. Deleting is destructive to the books, so it stays with admin.
+    // Shipments and expenses are day-to-day work. Agency payment is a separate
+    // financial event, so only an administrator can record it. Employees may
+    // create their own loads and later confirm delivery; all finance workflow
+    // steps remain administrator-controlled.
     match /shipments/{docId} {
-      allow read: if isStaff();
-      // Agency payment is the point at which commission becomes earned. Keep
-      // that financial finalisation with the administrator; users can continue
-      // to create and update operational loads up to that point.
+      allow read: if isAdmin() || (!isEmployee() && isStaff()) || ownEmployee(resource.data.employeeId);
       allow create: if isAdmin()
-        || (isStaff() && request.resource.data.status != 'Agency Paid');
+        || (isStaff() && !isEmployee()
+          && (!('agencyPaid' in request.resource.data) || request.resource.data.agencyPaid == false)
+          && (!('agencyPaidAt' in request.resource.data) || request.resource.data.agencyPaidAt == null)
+          && (!('agencyPaidDate' in request.resource.data) || request.resource.data.agencyPaidDate == null))
+        || (ownEmployee(request.resource.data.employeeId) && request.resource.data.ownerType == 'employee'
+          && request.resource.data.status == 'Assigned'
+          && (!('agencyPaid' in request.resource.data) || request.resource.data.agencyPaid == false)
+          && (!('agencyPaidAt' in request.resource.data) || request.resource.data.agencyPaidAt == null)
+          && (!('agencyPaidDate' in request.resource.data) || request.resource.data.agencyPaidDate == null)
+          && hasEmployeeCustomerAccess(request.resource.data.customerId));
       allow update: if isAdmin()
         || (
-          isStaff()
-          && resource.data.status != 'Agency Paid'
-          && request.resource.data.status != 'Agency Paid'
-        );
+          isStaff() && !isEmployee()
+          && !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['agencyPaid', 'agencyPaidAt', 'agencyPaidDate', 'commissionSplit'])
+        )
+        || (ownEmployee(resource.data.employeeId)
+          && request.resource.data.employeeId == resource.data.employeeId
+          && request.resource.data.ownerType == resource.data.ownerType
+          && resource.data.status in ['Assigned', 'In Transit']
+          && request.resource.data.status == 'Delivered'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'actualDeliveryDate', 'updatedAt'
+          ])
+          && hasEmployeeCustomerAccess(request.resource.data.customerId));
       allow delete: if isAdmin();
     }
 
     match /expenses/{docId} {
-      allow read: if isStaff();
-      allow create, update: if isStaff();
+      allow read: if isStaff() && !isEmployee();
+      allow create, update: if isStaff() && !isEmployee();
       allow delete: if isAdmin();
     }
 
     match /expenseCategories/{docId} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isEmployee();
       allow write: if isAdmin();
     }
 
@@ -157,7 +288,7 @@ service cloud.firestore {
     // Everyone can see every partner's withdrawals — the team asked for nothing
     // to be hidden between partners. Only an admin may record or remove one.
     match /withdrawals/{docId} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isEmployee();
       allow write: if isAdmin();
     }
 

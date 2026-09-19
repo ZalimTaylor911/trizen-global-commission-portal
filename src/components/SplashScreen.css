@@ -1,0 +1,156 @@
+.app-splash {
+  --splash-navy: #0b2545;
+  --splash-navy-light: #1d4271;
+  --splash-green: #17a058;
+  --splash-green-light: #4cc98a;
+  --splash-slate: #5a6b7f;
+  --splash-sky-top: #d6e8f5;
+  --splash-sky-mid: #eaf4f6;
+  --splash-sky-bottom: #ffffff;
+
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+  background: linear-gradient(180deg, var(--splash-sky-top) 0%, var(--splash-sky-mid) 55%, var(--splash-sky-bottom) 100%);
+  color: var(--splash-navy);
+  pointer-events: none;
+  user-select: none;
+}
+
+.app-splash-panel {
+  width: min(100%, 460px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.app-splash-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.app-splash-logo {
+  display: block;
+  width: min(100%, 260px);
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 16px rgba(13, 27, 61, 0.14));
+}
+
+.app-splash-brand {
+  margin: 10px 0 0;
+  display: flex;
+  gap: 0.32em;
+  font-size: clamp(26px, 8vw, 34px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.06em;
+}
+
+.app-splash-brand-trizen { color: var(--splash-navy); }
+.app-splash-brand-global { color: var(--splash-green); }
+
+.app-splash-product {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  text-transform: uppercase;
+  color: var(--splash-navy);
+  opacity: 0.85;
+}
+
+.app-splash-tagline {
+  margin: 16px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  text-transform: uppercase;
+  color: var(--splash-slate);
+}
+
+.app-splash-scene {
+  width: 100%;
+  margin-top: 8px;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 9%, #000 91%, transparent), linear-gradient(180deg, #000 76%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent, #000 9%, #000 91%, transparent), linear-gradient(180deg, #000 76%, transparent);
+  mask-composite: intersect;
+}
+
+.app-splash-scene svg { display: block; width: 100%; height: auto; overflow: visible; }
+.sp-fill-navy { fill: var(--splash-navy); }
+.sp-fill-green { fill: var(--splash-green); }
+.sp-stroke-green { stroke: var(--splash-green); }
+.sp-stop-navy-light { stop-color: var(--splash-navy-light); }
+.sp-stop-navy { stop-color: var(--splash-navy); }
+.sp-tire { fill: #0d1a2b; }
+.sp-hub { fill: #33475f; }
+.sp-lug { fill: #5b6e85; }
+
+.app-splash-sign-text { font-family: inherit; font-size: 8px; font-weight: 700; letter-spacing: 0.02em; fill: #fff; }
+.app-splash-trailer-text { font-family: inherit; font-size: 13.5px; font-weight: 800; letter-spacing: 0.06em; fill: var(--splash-navy); }
+.app-splash-shake { stroke: var(--splash-navy); stroke-width: 2; opacity: 0; }
+
+.app-splash-bump,
+.app-splash-truck,
+.app-splash-shadow,
+.app-splash-shake,
+.app-splash-cloud,
+.app-splash-wheel { transform-box: fill-box; }
+
+.app-splash-bump { animation: app-splash-bump-run 4.2s linear infinite; }
+.app-splash-truck { transform-origin: 50% 100%; animation: app-splash-hop 4.2s ease-in-out infinite; }
+.app-splash-shadow { transform-origin: 50% 50%; opacity: 0.2; animation: app-splash-shadow 4.2s ease-in-out infinite; }
+.app-splash-shake-front { animation: app-splash-shake-front 4.2s ease-out infinite; }
+.app-splash-shake-rear { animation: app-splash-shake-rear 4.2s ease-out infinite; }
+.app-splash-wheel { transform-origin: 50% 50%; animation: app-splash-spin 0.66s linear infinite; }
+.app-splash-dashes { animation: app-splash-dashes 0.316s linear infinite; }
+.app-splash-cloud-a { animation: app-splash-drift 14s ease-in-out infinite alternate; }
+.app-splash-cloud-b { animation: app-splash-drift 18s ease-in-out infinite alternate-reverse; }
+
+@keyframes app-splash-bump-run { from { transform: translateX(520px); } to { transform: translateX(-120px); } }
+@keyframes app-splash-hop {
+  0%, 16% { transform: translateY(0) rotate(0deg); }
+  22% { transform: translateY(-5px) rotate(-1.4deg); }
+  27% { transform: translateY(-15px) rotate(-1.2deg); }
+  33% { transform: translateY(-12px) rotate(0.2deg); }
+  37% { transform: translateY(-14px) rotate(0deg); }
+  43% { transform: translateY(-2px) rotate(0.8deg); }
+  48%, 54% { transform: translateY(0) rotate(0deg); }
+  56% { transform: translateY(-5px) rotate(1.2deg); }
+  60% { transform: translateY(-14px) rotate(1deg); }
+  65% { transform: translateY(-12px) rotate(0deg); }
+  70% { transform: translateY(-1px) rotate(-0.6deg); }
+  75%, 100% { transform: translateY(0) rotate(0deg); }
+}
+@keyframes app-splash-shadow { 0%, 22% { transform: scaleX(1); opacity: .2; } 27%, 37% { transform: scaleX(.9); opacity: .12; } 48%, 56% { transform: scaleX(1); opacity: .2; } 60%, 66% { transform: scaleX(.92); opacity: .13; } 76%, 100% { transform: scaleX(1); opacity: .2; } }
+@keyframes app-splash-shake-front { 0%, 21% { opacity: 0; transform: translateX(-4px); } 28% { opacity: 1; transform: translateX(0); } 40%, 100% { opacity: 0; transform: translateX(4px); } }
+@keyframes app-splash-shake-rear { 0%, 54% { opacity: 0; transform: translateX(4px); } 61% { opacity: 1; transform: translateX(0); } 72%, 100% { opacity: 0; transform: translateX(-4px); } }
+@keyframes app-splash-spin { to { transform: rotate(360deg); } }
+@keyframes app-splash-dashes { to { stroke-dashoffset: 48; } }
+@keyframes app-splash-drift { to { transform: translateX(26px); } }
+
+.app-splash-progress { position: relative; width: min(62%, 240px); height: 10px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: rgba(11, 37, 69, 0.12); }
+.app-splash-progress-fill { position: absolute; inset: 0 auto 0 0; width: 46%; border-radius: inherit; background: linear-gradient(90deg, var(--splash-green), var(--splash-green-light)); animation: app-splash-progress 1.7s cubic-bezier(.55, 0, .3, 1) infinite; }
+@keyframes app-splash-progress { from { transform: translateX(-100%); } to { transform: translateX(240%); } }
+.app-splash-label { margin: 18px 0 0; font-size: 12px; letter-spacing: .3em; text-indent: .3em; text-transform: uppercase; color: var(--splash-slate); }
+
+@media (max-width: 380px) {
+  .app-splash-product { letter-spacing: .3em; text-indent: .3em; }
+  .app-splash-tagline, .app-splash-label { letter-spacing: .2em; text-indent: .2em; }
+  .app-splash-label { font-size: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-splash-bump, .app-splash-truck, .app-splash-shadow, .app-splash-shake, .app-splash-wheel, .app-splash-dashes, .app-splash-cloud { animation: none; }
+  .app-splash-bump { transform: translateX(470px); }
+  .app-splash-progress-fill { width: 55%; animation: app-splash-pulse 1.8s ease-in-out infinite; }
+  @keyframes app-splash-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+}
