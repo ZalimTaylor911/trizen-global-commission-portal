@@ -27,7 +27,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { useData } from '@/context/DataContext';
 import { useTheme } from '@/context/ThemeContext';
-import { computeNotifications, type Notification } from '@/domain/notifications';
+import { computeEmployeeNotifications, computeNotifications, type Notification } from '@/domain/notifications';
 import { initialsOf } from '@/lib/avatar';
 import { LogoMark } from './Logo';
 import GlobalSearch from './GlobalSearch';
@@ -74,6 +74,7 @@ const EMPLOYEE_CHILDREN: NavItem[] = [
 ];
 
 const SIDEBAR_KEY = 'trizen.sidebar.collapsed';
+const NOTIFICATION_READ_KEY = 'trizen.notifications.read';
 
 export default function Layout() {
   const { profile, isAdmin, isEmployee, signOut, user } = useAuth();
@@ -91,6 +92,9 @@ export default function Layout() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const notificationReadKey = `${NOTIFICATION_READ_KEY}.${user?.uid ?? 'anonymous'}`;
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>(() => readNotificationIdsFor(notificationReadKey));
+  const [loadedNotificationReadKey, setLoadedNotificationReadKey] = useState(notificationReadKey);
 
   useEffect(() => {
     if (inCrm) setCrmOpen(true);
@@ -100,6 +104,16 @@ export default function Layout() {
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0');
   }, [collapsed]);
+
+  useEffect(() => {
+    setReadNotificationIds(readNotificationIdsFor(notificationReadKey));
+    setLoadedNotificationReadKey(notificationReadKey);
+  }, [notificationReadKey]);
+
+  useEffect(() => {
+    if (loadedNotificationReadKey !== notificationReadKey) return;
+    localStorage.setItem(notificationReadKey, JSON.stringify(readNotificationIds));
+  }, [loadedNotificationReadKey, notificationReadKey, readNotificationIds]);
 
   // Ctrl+K / Cmd+K opens search from anywhere.
   useEffect(() => {
@@ -123,21 +137,30 @@ export default function Layout() {
 
   const notifications = useMemo<Notification[]>(() => {
     if (data.loading) return [];
-    return computeNotifications(
-      {
-        shipments: data.shipments,
-        agencies: data.agencies,
-        partners: data.partners,
-        expenses: data.expenses,
-        withdrawals: data.withdrawals,
-      },
-      data.customers,
-    );
-  }, [data]);
+    const dataset = {
+      shipments: data.shipments,
+      agencies: data.agencies,
+      partners: data.partners,
+      expenses: data.expenses,
+      withdrawals: data.withdrawals,
+    };
+    return isEmployee
+      ? computeEmployeeNotifications(dataset, data.customers)
+      : computeNotifications(dataset, data.customers);
+  }, [data, isEmployee]);
 
-  const criticalCount = notifications.filter((n) => n.severity === 'critical').length;
+  const unreadNotifications = notifications.filter((notification) => !readNotificationIds.includes(notification.id));
+  const unreadCriticalCount = unreadNotifications.filter((n) => n.severity === 'critical').length;
   const breadcrumbs = useBreadcrumbs();
   const visible = (item: NavItem) => !item.adminOnly || isAdmin;
+
+  function markNotificationRead(id: string) {
+    setReadNotificationIds((current) => current.includes(id) ? current : [...current, id]);
+  }
+
+  function markAllNotificationsRead() {
+    setReadNotificationIds((current) => [...new Set([...current, ...notifications.map((notification) => notification.id)])]);
+  }
 
   return (
     <div className={collapsed ? 'app-shell collapsed' : 'app-shell'}>
@@ -149,7 +172,7 @@ export default function Layout() {
         inEmployees={inEmployees}
         isAdmin={isAdmin}
         isEmployee={isEmployee}
-        criticalCount={criticalCount}
+        criticalCount={unreadCriticalCount}
         onToggleCrm={() => (collapsed || window.matchMedia('(max-width: 600px)').matches ? navigate('/crm') : setCrmOpen((open) => !open))}
         onToggleEmployees={() => (collapsed || window.matchMedia('(max-width: 600px)').matches ? navigate('/employees') : setEmployeesOpen((open) => !open))}
         onToggleSidebar={() => setCollapsed((value) => !value)}
@@ -214,26 +237,33 @@ export default function Layout() {
             <button
               className="icon-btn"
               onClick={() => setBellOpen((v) => !v)}
-              aria-label={`Notifications (${notifications.length})`}
+              aria-label={`Notifications (${unreadNotifications.length} unread)`}
             >
               <Bell size={18} />
-              {notifications.length > 0 && (
-                <span className={criticalCount > 0 ? 'bell-dot critical' : 'bell-dot'}>
-                  {notifications.length}
+              {unreadNotifications.length > 0 && (
+                <span className={unreadCriticalCount > 0 ? 'bell-dot critical' : 'bell-dot'}>
+                  {unreadNotifications.length}
                 </span>
               )}
             </button>
             {bellOpen && (
               <div className="dropdown wide" onMouseLeave={() => setBellOpen(false)}>
-                <div className="dropdown-title">Needs attention</div>
+                <div className="dropdown-title notification-heading">
+                  <span>Needs attention</span>
+                  {unreadNotifications.length > 0 && (
+                    <button type="button" className="notification-clear" onClick={markAllNotificationsRead}>
+                      Mark all read
+                    </button>
+                  )}
+                </div>
                 {notifications.length === 0 && (
                   <p className="dropdown-empty">Nothing needs attention right now.</p>
                 )}
                 {notifications.map((notification) => (
                   <button
                     key={notification.id}
-                    className="notification"
-                    onClick={() => navigate(notification.link)}
+                    className={readNotificationIds.includes(notification.id) ? 'notification read' : 'notification'}
+                    onClick={() => { markNotificationRead(notification.id); navigate(notification.link); }}
                   >
                     <span className={`dot ${notification.severity}`} />
                     <span>
@@ -292,6 +322,15 @@ export default function Layout() {
       {searchOpen && <GlobalSearch onClose={() => setSearchOpen(false)} />}
     </div>
   );
+}
+
+function readNotificationIdsFor(key: string): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(key) ?? '[]');
+    return Array.isArray(stored) && stored.every((value) => typeof value === 'string') ? stored : [];
+  } catch {
+    return [];
+  }
 }
 
 function Sidebar({

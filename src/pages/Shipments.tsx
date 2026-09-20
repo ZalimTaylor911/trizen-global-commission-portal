@@ -941,33 +941,53 @@ export function ShipmentForm({
     draft.companyName.trim().length > 0 && draft.agencyId.length > 0 && !needsInvoiceDate
     && (draft.ownerType !== 'employee' || (Boolean(draft.employeeId) && Boolean(draft.customerId)));
 
-  // After an employee creates a shipment, only the delivery confirmation is
-  // theirs to submit. Billing, customer payment and agency payment are finance
-  // decisions and remain admin-only.
+  // Employees can progress their own load through the operational statuses.
+  // Billing, customer payment and agency payment remain admin-only.
   if (isEmployee && !isNew) {
-    const canMarkDelivered = draft.status === 'Assigned' || draft.status === 'In Transit';
-    const submitDelivery = () => onSave({
+    const employeeStatusOptions: ShipmentStatus[] = draft.status === 'Assigned'
+      ? ['Assigned', 'In Transit']
+      : draft.status === 'In Transit'
+        ? ['In Transit', 'Delivered']
+        : [draft.status];
+    const canUpdateStatus = employeeStatusOptions.length > 1;
+    const submitEmployeeUpdate = () => onSave({
       ...draft,
-      status: 'Delivered',
-      actualDeliveryDate: draft.actualDeliveryDate || today(),
+      actualPickupDate: draft.status === 'In Transit' && !draft.actualPickupDate ? today() : draft.actualPickupDate,
+      actualDeliveryDate: draft.status === 'Delivered' && !draft.actualDeliveryDate ? today() : draft.actualDeliveryDate,
     });
     return <Modal
       narrow
-      title="Update delivery"
+      title="Update shipment status"
       onClose={onCancel}
-      footer={<><button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>{canMarkDelivered && <button className="btn primary" onClick={submitDelivery} disabled={busy}>{busy ? 'Saving…' : 'Mark delivered'}</button>}</>}
+      footer={<><button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>{canUpdateStatus && <button className="btn primary" onClick={submitEmployeeUpdate} disabled={busy}>{busy ? 'Saving…' : 'Save status'}</button>}</>}
     >
       <div className="partner-rows">
         <div><span>Load</span><strong>{draft.loadNumber || '—'}</strong></div>
         <div><span>Customer</span><strong>{draft.companyName || '—'}</strong></div>
-        <div><span>Current status</span><strong>{draft.status}</strong></div>
-      </div>
-      {canMarkDelivered ? <>
-        <Field label="Actual delivery date">
-          <input type="date" value={draft.actualDeliveryDate} onChange={(e) => set('actualDeliveryDate', e.target.value)} />
+        <Field label="Status">
+          <select
+            value={draft.status}
+            onChange={(event) => {
+              const status = event.target.value as ShipmentStatus;
+              setDraft((current) => ({
+                ...current,
+                status,
+                actualPickupDate: status === 'In Transit' && !current.actualPickupDate ? today() : current.actualPickupDate,
+                actualDeliveryDate: status === 'Delivered' && !current.actualDeliveryDate ? today() : current.actualDeliveryDate,
+              }));
+            }}
+          >
+            {employeeStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
         </Field>
-        <p className="help">Submitting this marks the shipment Delivered. Billing, customer payment and agency payment are completed by an administrator.</p>
-      </> : <Banner tone="info">This shipment is already delivered or has progressed beyond delivery. Only an administrator can make further changes.</Banner>}
+      </div>
+      {draft.status === 'In Transit' && <Field label="Actual pickup date">
+        <input type="date" value={draft.actualPickupDate} onChange={(event) => set('actualPickupDate', event.target.value)} />
+      </Field>}
+      {draft.status === 'Delivered' && <Field label="Actual delivery date">
+          <input type="date" value={draft.actualDeliveryDate} onChange={(e) => set('actualDeliveryDate', e.target.value)} />
+      </Field>}
+      {canUpdateStatus ? <p className="help">Employees can update pickup and delivery progress. Billing, customer payment and agency payment are completed by an administrator.</p> : <Banner tone="info">This shipment is already delivered or has progressed beyond delivery. Only an administrator can make further changes.</Banner>}
     </Modal>;
   }
 

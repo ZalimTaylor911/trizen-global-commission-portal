@@ -264,12 +264,18 @@ service cloud.firestore {
         || (ownEmployee(resource.data.employeeId)
           && request.resource.data.employeeId == resource.data.employeeId
           && request.resource.data.ownerType == resource.data.ownerType
-          && resource.data.status in ['Assigned', 'In Transit']
-          && request.resource.data.status == 'Delivered'
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status', 'actualDeliveryDate', 'updatedAt'
-          ])
-          && hasEmployeeCustomerAccess(request.resource.data.customerId));
+          && (
+            (resource.data.status == 'Assigned'
+              && request.resource.data.status == 'In Transit'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'status', 'actualPickupDate', 'updatedAt'
+              ]))
+            || (resource.data.status == 'In Transit'
+              && request.resource.data.status == 'Delivered'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'status', 'actualDeliveryDate', 'updatedAt'
+              ]))
+          ));
       allow delete: if isAdmin();
     }
 

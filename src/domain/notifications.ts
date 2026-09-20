@@ -193,6 +193,75 @@ export function computeNotifications(
   return notifications.sort((a, b) => order[a.severity] - order[b.severity]);
 }
 
+/** Alerts shown to an employee for their assigned loads and receivables only. */
+export function computeEmployeeNotifications(
+  data: DataSet,
+  customers: Customer[],
+  asOf: string = todayIso(),
+): Notification[] {
+  const notifications: Notification[] = [];
+  const receivables = computeReceivables(data.shipments, customers, asOf);
+  const open = openReceivables(receivables);
+  const overdue = open.filter((receivable) => receivable.state === 'overdue');
+
+  if (overdue.length > 0) {
+    notifications.push({
+      id: 'employee-overdue-invoices',
+      severity: 'critical',
+      title: `${overdue.length} overdue invoice${overdue.length === 1 ? '' : 's'}`,
+      detail: `${money(sum(overdue.map((receivable) => receivable.amount)))} past due for your loads.`,
+      link: '/crm/invoices?view=overdue',
+      count: overdue.length,
+      amount: sum(overdue.map((receivable) => receivable.amount)),
+    });
+  }
+
+  if (open.length > 0) {
+    notifications.push({
+      id: 'employee-outstanding-invoices',
+      severity: 'warning',
+      title: `${open.length} outstanding invoice${open.length === 1 ? '' : 's'}`,
+      detail: `${money(sum(open.map((receivable) => receivable.amount)))} still owed for your loads.`,
+      link: '/crm/invoices',
+      count: open.length,
+      amount: sum(open.map((receivable) => receivable.amount)),
+    });
+  }
+
+  const pickupOverdue = data.shipments.filter(
+    (shipment) => shipment.status === 'Assigned' && (shipment.actualPickupDate || shipment.date) < asOf,
+  );
+  if (pickupOverdue.length > 0) {
+    notifications.push({
+      id: 'employee-overdue-pickups',
+      severity: 'warning',
+      title: `${pickupOverdue.length} assigned load${pickupOverdue.length === 1 ? '' : 's'} past pickup date`,
+      detail: 'These loads are still Assigned after their scheduled pickup date.',
+      link: '/shipments',
+      count: pickupOverdue.length,
+    });
+  }
+
+  const deliveryOverdue = data.shipments.filter(
+    (shipment) => shipment.status === 'In Transit'
+      && Boolean(shipment.estimatedDeliveryDate)
+      && shipment.estimatedDeliveryDate < asOf,
+  );
+  if (deliveryOverdue.length > 0) {
+    notifications.push({
+      id: 'employee-overdue-deliveries',
+      severity: 'critical',
+      title: `${deliveryOverdue.length} in-transit load${deliveryOverdue.length === 1 ? '' : 's'} past delivery date`,
+      detail: 'These loads are still In Transit after their estimated delivery date.',
+      link: '/shipments',
+      count: deliveryOverdue.length,
+    });
+  }
+
+  const order: Record<NotificationSeverity, number> = { critical: 0, warning: 1, info: 2 };
+  return notifications.sort((a, b) => order[a.severity] - order[b.severity]);
+}
+
 function sum(values: number[]): number {
   return round2(values.reduce((total, value) => total + value, 0));
 }
